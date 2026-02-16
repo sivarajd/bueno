@@ -127,6 +127,23 @@ export {
   createSessionStore,
 } from './cache';
 
+// Distributed Lock
+export {
+  DistributedLock,
+  LockAcquireError,
+  LockTimeoutError,
+  createDistributedLock,
+  createRedisLock,
+  createMemoryLock,
+  getDefaultLock,
+  setDefaultLock,
+  lock,
+  type LockConfig,
+  type LockOptions,
+  type Lock,
+  type LockHandle,
+} from './lock';
+
 // SSG
 export {
   SSG,
@@ -187,6 +204,8 @@ export {
   createWebSocketServer,
   createWebSocketClient,
   createPubSub,
+  createRedisPubSub,
+  createMemoryPubSub,
   isWebSocketRequest,
   generateConnectionId,
   createWebSocketData,
@@ -199,6 +218,9 @@ export {
   type ErrorHandler,
   type WebSocketServerOptions,
   type WebSocketClientOptions,
+  type PubSubConfig,
+  type PubSubMessage,
+  type PubSubCallback,
 } from './websocket';
 
 // Logger

@@ -373,58 +373,500 @@ export class WebSocketClient {
   }
 }
 
-// ============= Pub/Sub Helpers =============
+// ============= Pub/Sub Types =============
 
-export class PubSub {
-  private channels: Map<string, Set<(message: unknown) => void>> = new Map();
+export interface PubSubConfig {
+  driver?: 'redis' | 'memory';
+  url?: string; // Redis URL (e.g., redis://localhost:6379)
+  keyPrefix?: string;
+  reconnect?: boolean;
+  reconnectInterval?: number;
+  maxReconnectAttempts?: number;
+}
 
-  /**
-   * Subscribe to a channel
-   */
-  subscribe(channel: string, callback: (message: unknown) => void): () => void {
+export interface PubSubMessage {
+  channel: string;
+  pattern?: string; // Present for pattern subscriptions
+  data: unknown;
+  timestamp: number;
+}
+
+export type PubSubCallback = (message: PubSubMessage) => void | Promise<void>;
+
+// ============= In-Memory Pub/Sub (Fallback) =============
+
+class InMemoryPubSub {
+  private channels: Map<string, Set<PubSubCallback>> = new Map();
+  private patterns: Map<string, Set<PubSubCallback>> = new Map();
+
+  async publish(channel: string, data: unknown): Promise<number> {
+    const message: PubSubMessage = {
+      channel,
+      data,
+      timestamp: Date.now(),
+    };
+
+    let deliveredCount = 0;
+
+    // Direct channel subscribers
+    const subscribers = this.channels.get(channel);
+    if (subscribers) {
+      for (const callback of subscribers) {
+        await callback(message);
+        deliveredCount++;
+      }
+    }
+
+    // Pattern subscribers
+    for (const [pattern, callbacks] of this.patterns) {
+      if (this.matchPattern(pattern, channel)) {
+        const patternMessage = { ...message, pattern };
+        for (const callback of callbacks) {
+          await callback(patternMessage);
+          deliveredCount++;
+        }
+      }
+    }
+
+    return deliveredCount;
+  }
+
+  async subscribe(channel: string, callback: PubSubCallback): Promise<() => void> {
     if (!this.channels.has(channel)) {
       this.channels.set(channel, new Set());
     }
-    
     this.channels.get(channel)!.add(callback);
-    
-    // Return unsubscribe function
+
     return () => {
       this.channels.get(channel)?.delete(callback);
     };
   }
 
+  async psubscribe(pattern: string, callback: PubSubCallback): Promise<() => void> {
+    if (!this.patterns.has(pattern)) {
+      this.patterns.set(pattern, new Set());
+    }
+    this.patterns.get(pattern)!.add(callback);
+
+    return () => {
+      this.patterns.get(pattern)?.delete(callback);
+    };
+  }
+
+  async unsubscribe(channel: string): Promise<void> {
+    this.channels.delete(channel);
+  }
+
+  async punsubscribe(pattern: string): Promise<void> {
+    this.patterns.delete(pattern);
+  }
+
+  getChannelSubscribers(channel: string): number {
+    return this.channels.get(channel)?.size ?? 0;
+  }
+
+  getPatternSubscribers(pattern: string): number {
+    return this.patterns.get(pattern)?.size ?? 0;
+  }
+
+  getTotalSubscribers(): number {
+    let total = 0;
+    for (const subscribers of this.channels.values()) {
+      total += subscribers.size;
+    }
+    for (const subscribers of this.patterns.values()) {
+      total += subscribers.size;
+    }
+    return total;
+  }
+
+  async clear(): Promise<void> {
+    this.channels.clear();
+    this.patterns.clear();
+  }
+
+  destroy(): void {
+    this.channels.clear();
+    this.patterns.clear();
+  }
+
   /**
-   * Publish to a channel
+   * Match a pattern against a channel name
+   * Supports * (match any characters) and ? (match single character)
    */
-  publish(channel: string, message: unknown): void {
-    const subscribers = this.channels.get(channel);
-    if (subscribers) {
-      for (const callback of subscribers) {
-        callback(message);
+  private matchPattern(pattern: string, channel: string): boolean {
+    const regex = new RegExp(
+      '^' + pattern
+        .replace(/[.+^${}()|[\]\\]/g, '\\$&') // Escape special regex chars except * and ?
+        .replace(/\*/g, '.*') // * matches any characters
+        .replace(/\?/g, '.') + // ? matches single character
+      '$'
+    );
+    return regex.test(channel);
+  }
+}
+
+// ============= Redis Pub/Sub (Bun.redis Native) =============
+
+class RedisPubSub {
+  private publisher: unknown = null;
+  private subscriber: unknown = null;
+  private url: string;
+  private keyPrefix: string;
+  private channelCallbacks: Map<string, Set<PubSubCallback>> = new Map();
+  private patternCallbacks: Map<string, Set<PubSubCallback>> = new Map();
+  private _isConnected = false;
+  private reconnect: boolean;
+  private reconnectInterval: number;
+  private maxReconnectAttempts: number;
+  private reconnectAttempts = 0;
+
+  constructor(config: PubSubConfig) {
+    this.url = config.url ?? 'redis://localhost:6379';
+    this.keyPrefix = config.keyPrefix ?? '';
+    this.reconnect = config.reconnect ?? true;
+    this.reconnectInterval = config.reconnectInterval ?? 1000;
+    this.maxReconnectAttempts = config.maxReconnectAttempts ?? 5;
+  }
+
+  async connect(): Promise<void> {
+    try {
+      // Use Bun's native Redis client
+      const { RedisClient } = await import('bun');
+      
+      // Create separate connections for pub and sub
+      // (Subscriber connections enter a special mode and can't run other commands)
+      this.publisher = new RedisClient(this.url);
+      this.subscriber = new RedisClient(this.url);
+      this._isConnected = true;
+      this.reconnectAttempts = 0;
+    } catch (error) {
+      throw new Error(`Failed to connect to Redis: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
+  async disconnect(): Promise<void> {
+    const pub = this.publisher as { close?: () => Promise<void> } | null;
+    const sub = this.subscriber as { close?: () => Promise<void> } | null;
+    
+    if (pub?.close) await pub.close();
+    if (sub?.close) await sub.close();
+    
+    this._isConnected = false;
+    this.publisher = null;
+    this.subscriber = null;
+  }
+
+  get isConnected(): boolean {
+    return this._isConnected;
+  }
+
+  async publish(channel: string, data: unknown): Promise<number> {
+    if (!this._isConnected) {
+      throw new Error('Redis Pub/Sub not connected');
+    }
+
+    const fullChannel = this.keyPrefix + channel;
+    const message = JSON.stringify({
+      channel,
+      data,
+      timestamp: Date.now(),
+    });
+
+    const client = this.publisher as { publish: (channel: string, message: string) => Promise<number> };
+    return client.publish(fullChannel, message);
+  }
+
+  async subscribe(channel: string, callback: PubSubCallback): Promise<() => void> {
+    if (!this._isConnected) {
+      throw new Error('Redis Pub/Sub not connected');
+    }
+
+    const fullChannel = this.keyPrefix + channel;
+
+    // Store callback
+    if (!this.channelCallbacks.has(channel)) {
+      this.channelCallbacks.set(channel, new Set());
+    }
+    this.channelCallbacks.get(channel)!.add(callback);
+
+    // Subscribe to Redis channel
+    const client = this.subscriber as {
+      subscribe: (channel: string, callback: (message: string, channel: string) => void) => Promise<void>;
+    };
+
+    // Create wrapper callback for Redis
+    const wrappedCallback = (message: string, redisChannel: string) => {
+      try {
+        const parsed = JSON.parse(message);
+        callback({
+          channel: parsed.channel ?? channel,
+          data: parsed.data,
+          timestamp: parsed.timestamp ?? Date.now(),
+        });
+      } catch {
+        // Handle raw string messages
+        callback({
+          channel,
+          data: message,
+          timestamp: Date.now(),
+        });
       }
+    };
+
+    await client.subscribe(fullChannel, wrappedCallback);
+
+    // Return unsubscribe function
+    return async () => {
+      this.channelCallbacks.get(channel)?.delete(callback);
+      
+      // If no more callbacks for this channel, unsubscribe from Redis
+      if (this.channelCallbacks.get(channel)?.size === 0) {
+        this.channelCallbacks.delete(channel);
+        const unsubClient = this.subscriber as { unsubscribe: (channel: string) => Promise<void> };
+        await unsubClient.unsubscribe(fullChannel);
+      }
+    };
+  }
+
+  async psubscribe(pattern: string, callback: PubSubCallback): Promise<() => void> {
+    if (!this._isConnected) {
+      throw new Error('Redis Pub/Sub not connected');
+    }
+
+    const fullPattern = this.keyPrefix + pattern;
+
+    // Store callback
+    if (!this.patternCallbacks.has(pattern)) {
+      this.patternCallbacks.set(pattern, new Set());
+    }
+    this.patternCallbacks.get(pattern)!.add(callback);
+
+    // Subscribe to Redis pattern
+    const client = this.subscriber as {
+      psubscribe: (pattern: string, callback: (message: string, channel: string, pattern: string) => void) => Promise<void>;
+    };
+
+    // Create wrapper callback for Redis
+    const wrappedCallback = (message: string, redisChannel: string, redisPattern: string) => {
+      try {
+        const parsed = JSON.parse(message);
+        callback({
+          channel: parsed.channel ?? redisChannel.replace(this.keyPrefix, ''),
+          pattern: pattern,
+          data: parsed.data,
+          timestamp: parsed.timestamp ?? Date.now(),
+        });
+      } catch {
+        callback({
+          channel: redisChannel.replace(this.keyPrefix, ''),
+          pattern: pattern,
+          data: message,
+          timestamp: Date.now(),
+        });
+      }
+    };
+
+    await client.psubscribe(fullPattern, wrappedCallback);
+
+    // Return unsubscribe function
+    return async () => {
+      this.patternCallbacks.get(pattern)?.delete(callback);
+      
+      // If no more callbacks for this pattern, unsubscribe from Redis
+      if (this.patternCallbacks.get(pattern)?.size === 0) {
+        this.patternCallbacks.delete(pattern);
+        const unsubClient = this.subscriber as { punsubscribe: (pattern: string) => Promise<void> };
+        await unsubClient.punsubscribe(fullPattern);
+      }
+    };
+  }
+
+  async unsubscribe(channel: string): Promise<void> {
+    if (!this._isConnected) return;
+
+    const fullChannel = this.keyPrefix + channel;
+    this.channelCallbacks.delete(channel);
+    
+    const client = this.subscriber as { unsubscribe: (channel: string) => Promise<void> };
+    await client.unsubscribe(fullChannel);
+  }
+
+  async punsubscribe(pattern: string): Promise<void> {
+    if (!this._isConnected) return;
+
+    const fullPattern = this.keyPrefix + pattern;
+    this.patternCallbacks.delete(pattern);
+    
+    const client = this.subscriber as { punsubscribe: (pattern: string) => Promise<void> };
+    await client.punsubscribe(fullPattern);
+  }
+
+  getChannelSubscribers(channel: string): number {
+    return this.channelCallbacks.get(channel)?.size ?? 0;
+  }
+
+  getPatternSubscribers(pattern: string): number {
+    return this.patternCallbacks.get(pattern)?.size ?? 0;
+  }
+
+  getTotalSubscribers(): number {
+    let total = 0;
+    for (const subscribers of this.channelCallbacks.values()) {
+      total += subscribers.size;
+    }
+    for (const subscribers of this.patternCallbacks.values()) {
+      total += subscribers.size;
+    }
+    return total;
+  }
+
+  async clear(): Promise<void> {
+    // Unsubscribe from all channels
+    for (const channel of this.channelCallbacks.keys()) {
+      await this.unsubscribe(channel);
+    }
+    // Unsubscribe from all patterns
+    for (const pattern of this.patternCallbacks.keys()) {
+      await this.punsubscribe(pattern);
+    }
+  }
+
+  destroy(): void {
+    this.disconnect().catch(() => {});
+    this.channelCallbacks.clear();
+    this.patternCallbacks.clear();
+  }
+}
+
+// ============= Pub/Sub Class (Unified Interface) =============
+
+export class PubSub {
+  private driver: InMemoryPubSub | RedisPubSub;
+  private driverType: 'redis' | 'memory';
+  private _isConnected = false;
+
+  constructor(config: PubSubConfig = {}) {
+    this.driverType = config.driver ?? 'memory';
+
+    if (this.driverType === 'redis' && config.url) {
+      this.driver = new RedisPubSub(config);
+    } else {
+      this.driver = new InMemoryPubSub();
+      // Memory driver is always "connected"
+      this._isConnected = true;
     }
   }
 
   /**
-   * Get channel subscriber count
+   * Connect to the pub/sub backend (Redis only)
    */
-  subscriberCount(channel: string): number {
-    return this.channels.get(channel)?.size ?? 0;
+  async connect(): Promise<void> {
+    if (this.driver instanceof RedisPubSub) {
+      await this.driver.connect();
+    }
+    this._isConnected = true;
   }
 
   /**
-   * Clear all subscribers from a channel
+   * Disconnect from the pub/sub backend
    */
-  clearChannel(channel: string): void {
-    this.channels.delete(channel);
+  async disconnect(): Promise<void> {
+    if (this.driver instanceof RedisPubSub) {
+      await this.driver.disconnect();
+    } else {
+      this.driver.destroy();
+    }
+    this._isConnected = false;
   }
 
   /**
-   * Clear all channels
+   * Check if connected
    */
-  clear(): void {
-    this.channels.clear();
+  get isConnected(): boolean {
+    return this._isConnected;
+  }
+
+  /**
+   * Get the driver type
+   */
+  getDriverType(): 'redis' | 'memory' {
+    return this.driverType;
+  }
+
+  /**
+   * Publish a message to a channel
+   * Returns the number of subscribers that received the message
+   */
+  async publish(channel: string, data: unknown): Promise<number> {
+    return this.driver.publish(channel, data);
+  }
+
+  /**
+   * Subscribe to a channel
+   * Returns an unsubscribe function
+   */
+  async subscribe(channel: string, callback: PubSubCallback): Promise<() => void> {
+    return this.driver.subscribe(channel, callback);
+  }
+
+  /**
+   * Subscribe to channels matching a pattern
+   * Supports * (any characters) and ? (single character)
+   * Returns an unsubscribe function
+   */
+  async psubscribe(pattern: string, callback: PubSubCallback): Promise<() => void> {
+    return this.driver.psubscribe(pattern, callback);
+  }
+
+  /**
+   * Unsubscribe all callbacks from a channel
+   */
+  async unsubscribe(channel: string): Promise<void> {
+    return this.driver.unsubscribe(channel);
+  }
+
+  /**
+   * Unsubscribe all callbacks from a pattern
+   */
+  async punsubscribe(pattern: string): Promise<void> {
+    return this.driver.punsubscribe(pattern);
+  }
+
+  /**
+   * Get subscriber count for a specific channel
+   */
+  getChannelSubscribers(channel: string): number {
+    return this.driver.getChannelSubscribers(channel);
+  }
+
+  /**
+   * Get subscriber count for a specific pattern
+   */
+  getPatternSubscribers(pattern: string): number {
+    return this.driver.getPatternSubscribers(pattern);
+  }
+
+  /**
+   * Get total subscriber count across all channels and patterns
+   */
+  getTotalSubscribers(): number {
+    return this.driver.getTotalSubscribers();
+  }
+
+  /**
+   * Clear all subscriptions
+   */
+  async clear(): Promise<void> {
+    return this.driver.clear();
+  }
+
+  /**
+   * Destroy the pub/sub instance and release resources
+   */
+  destroy(): void {
+    this.driver.destroy();
+    this._isConnected = false;
   }
 }
 
@@ -446,9 +888,24 @@ export function createWebSocketClient(options: WebSocketClientOptions): WebSocke
 
 /**
  * Create a pub/sub instance
+ * @param config Configuration options including driver type and Redis URL
  */
-export function createPubSub(): PubSub {
-  return new PubSub();
+export function createPubSub(config?: PubSubConfig): PubSub {
+  return new PubSub(config);
+}
+
+/**
+ * Create a Redis pub/sub instance (convenience function)
+ */
+export function createRedisPubSub(url: string, options?: Omit<PubSubConfig, 'driver' | 'url'>): PubSub {
+  return new PubSub({ driver: 'redis', url, ...options });
+}
+
+/**
+ * Create an in-memory pub/sub instance (convenience function)
+ */
+export function createMemoryPubSub(): PubSub {
+  return new PubSub({ driver: 'memory' });
 }
 
 // ============= Upgrade Helper =============
