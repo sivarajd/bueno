@@ -144,6 +144,7 @@ export {
 export {
   Storage,
   createStorage,
+  Secrets,
   type StorageConfig,
   type UploadOptions,
   type DownloadOptions,
@@ -151,6 +152,8 @@ export {
   type ListOptions,
   type ListResult,
   type PresignedURLOptions,
+  type SecretOptions,
+  type SetSecretOptions,
 } from './storage';
 
 // Testing

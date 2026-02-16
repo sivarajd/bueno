@@ -1,8 +1,8 @@
 /**
  * Caching Layer
  * 
- * Provides key-value caching with TTL support using Bun.redis
- * or in-memory fallback for development.
+ * Unified interface over Bun.redis with in-memory fallback.
+ * Uses Bun 1.3+ native Redis client for production.
  */
 
 // ============= Types =============
@@ -30,18 +30,18 @@ export interface PubSubMessage {
   message: string;
 }
 
-// ============= In-Memory Cache =============
+// ============= In-Memory Cache (Fallback) =============
 
 class MemoryCache {
   private store = new Map<string, { value: unknown; expiresAt: number }>();
   private cleanupInterval: ReturnType<typeof setInterval>;
+  private pubsubListeners: Map<string, Set<(message: string) => void>> = new Map();
 
   constructor() {
-    // Cleanup expired keys every 30 seconds
     this.cleanupInterval = setInterval(() => this.cleanup(), 30000);
   }
 
-  async get(key: string): Promise<unknown> {
+  async get(key: string): Promise<string | null> {
     const entry = this.store.get(key);
     if (!entry) return null;
     
@@ -50,10 +50,10 @@ class MemoryCache {
       return null;
     }
     
-    return entry.value;
+    return entry.value as string;
   }
 
-  async set(key: string, value: unknown, ttl?: number): Promise<void> {
+  async set(key: string, value: string, ttl?: number): Promise<void> {
     const expiresAt = Date.now() + (ttl ?? 3600) * 1000;
     this.store.set(key, { value, expiresAt });
   }
@@ -78,31 +78,12 @@ class MemoryCache {
     this.store.clear();
   }
 
-  async increment(key: string, by = 1): Promise<number> {
-    const current = (await this.get(key)) ?? 0;
-    const newValue = Number(current) + by;
-    await this.set(key, newValue);
-    return newValue;
-  }
-
-  async decrement(key: string, by = 1): Promise<number> {
-    return this.increment(key, -by);
-  }
-
-  async keys(pattern?: string): Promise<string[]> {
-    const allKeys = Array.from(this.store.keys());
-    if (!pattern) return allKeys;
-    
-    // Simple glob pattern matching
-    const regex = new RegExp('^' + pattern.replace(/\*/g, '.*') + '$');
-    return allKeys.filter(k => regex.test(k));
-  }
-
-  async ttl(key: string): Promise<number> {
+  async incr(key: string): Promise<number> {
     const entry = this.store.get(key);
-    if (!entry) return -2; // Key doesn't exist
-    const remaining = Math.floor((entry.expiresAt - Date.now()) / 1000);
-    return remaining > 0 ? remaining : -1;
+    const value = entry ? parseInt(entry.value as string) || 0 : 0;
+    const newValue = value + 1;
+    await this.set(key, String(newValue), entry ? Math.floor((entry.expiresAt - Date.now()) / 1000) : undefined);
+    return newValue;
   }
 
   async expire(key: string, ttl: number): Promise<boolean> {
@@ -110,6 +91,40 @@ class MemoryCache {
     if (!entry) return false;
     entry.expiresAt = Date.now() + ttl * 1000;
     return true;
+  }
+
+  async ttl(key: string): Promise<number> {
+    const entry = this.store.get(key);
+    if (!entry) return -2;
+    const remaining = Math.floor((entry.expiresAt - Date.now()) / 1000);
+    return remaining > 0 ? remaining : -1;
+  }
+
+  // Pub/Sub simulation
+  async publish(channel: string, message: string): Promise<number> {
+    const listeners = this.pubsubListeners.get(channel);
+    if (listeners) {
+      for (const listener of listeners) {
+        listener(message);
+      }
+      return listeners.size;
+    }
+    return 0;
+  }
+
+  async subscribe(channel: string, callback: (message: string) => void): Promise<void> {
+    if (!this.pubsubListeners.has(channel)) {
+      this.pubsubListeners.set(channel, new Set());
+    }
+    this.pubsubListeners.get(channel)!.add(callback);
+  }
+
+  async unsubscribe(channel: string, callback?: (message: string) => void): Promise<void> {
+    if (callback) {
+      this.pubsubListeners.get(channel)?.delete(callback);
+    } else {
+      this.pubsubListeners.delete(channel);
+    }
   }
 
   private cleanup(): void {
@@ -124,10 +139,11 @@ class MemoryCache {
   destroy(): void {
     clearInterval(this.cleanupInterval);
     this.store.clear();
+    this.pubsubListeners.clear();
   }
 }
 
-// ============= Redis Cache =============
+// ============= Redis Cache (Bun.redis Native) =============
 
 class RedisCache {
   private client: unknown = null;
@@ -140,126 +156,120 @@ class RedisCache {
 
   async connect(): Promise<void> {
     try {
-      // Try to use Bun.redis if available (Bun v1.2+)
-      const bunModule = await import('bun').catch(() => null);
-      
-      if (bunModule && 'redis' in bunModule) {
-        // Bun.redis is available
-        // Note: The actual API depends on Bun version
-        this.client = bunModule.redis;
-        this._isConnected = true;
-        return;
-      }
-      
-      // Fallback: Use a simple TCP connection for Redis
-      // This is a basic implementation - for production, use ioredis or similar
-      throw new Error('Bun.redis not available. Install ioredis for Redis support.');
+      // Use Bun's native Redis client
+      const { RedisClient } = await import('bun');
+      this.client = new RedisClient(this.url);
+      this._isConnected = true;
     } catch (error) {
       throw new Error(`Failed to connect to Redis: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
 
   async disconnect(): Promise<void> {
-    if (this.client && typeof (this.client as { close?: () => void }).close === 'function') {
-      (this.client as { close: () => void }).close();
-    }
+    // Bun.redis handles connection management automatically
     this._isConnected = false;
+    this.client = null;
   }
 
   get isConnected(): boolean {
     return this._isConnected;
   }
 
-  private async sendCommand(command: string[]): Promise<unknown> {
-    // Basic Redis protocol implementation
-    // For production use, this should use a proper Redis client
+  async get(key: string): Promise<string | null> {
     const client = this.client as {
-      send?: (cmd: string[]) => Promise<unknown>;
-      query?: (cmd: string) => Promise<unknown>;
+      get: (key: string) => Promise<string | null>;
+    };
+    return client.get(key);
+  }
+
+  async set(key: string, value: string, ttl?: number): Promise<void> {
+    const client = this.client as {
+      set: (key: string, value: string, options?: { ex?: number }) => Promise<unknown>;
     };
     
-    if (client?.send) {
-      return client.send(command);
-    }
-    
-    if (client?.query) {
-      return client.query(command.join(' '));
-    }
-    
-    throw new Error('Redis client not properly initialized');
-  }
-
-  async get(key: string): Promise<unknown> {
-    try {
-      const result = await this.sendCommand(['GET', key]);
-      return result;
-    } catch {
-      return null;
-    }
-  }
-
-  async set(key: string, value: unknown, ttl?: number): Promise<void> {
-    const serialized = typeof value === 'string' ? value : JSON.stringify(value);
-    
     if (ttl) {
-      await this.sendCommand(['SETEX', key, String(ttl), serialized]);
+      await client.set(key, value, { ex: ttl });
     } else {
-      await this.sendCommand(['SET', key, serialized]);
+      await client.set(key, value);
     }
   }
 
   async delete(key: string): Promise<boolean> {
-    const result = await this.sendCommand(['DEL', key]);
-    return Number(result) > 0;
+    const client = this.client as {
+      del: (key: string) => Promise<number>;
+    };
+    const result = await client.del(key);
+    return result > 0;
   }
 
   async has(key: string): Promise<boolean> {
-    const result = await this.sendCommand(['EXISTS', key]);
-    return Number(result) > 0;
+    const client = this.client as {
+      exists: (key: string) => Promise<number>;
+    };
+    const result = await client.exists(key);
+    return result > 0;
   }
 
   async clear(): Promise<void> {
-    await this.sendCommand(['FLUSHDB']);
+    const client = this.client as {
+      flushdb: () => Promise<unknown>;
+    };
+    await client.flushdb();
   }
 
-  async increment(key: string, by = 1): Promise<number> {
-    const result = await this.sendCommand(['INCRBY', key, String(by)]);
-    return Number(result);
-  }
-
-  async decrement(key: string, by = 1): Promise<number> {
-    return this.increment(key, -by);
-  }
-
-  async keys(pattern: string): Promise<string[]> {
-    const result = await this.sendCommand(['KEYS', pattern]);
-    return Array.isArray(result) ? result : [];
-  }
-
-  async ttl(key: string): Promise<number> {
-    const result = await this.sendCommand(['TTL', key]);
-    return Number(result);
+  async incr(key: string): Promise<number> {
+    const client = this.client as {
+      incr: (key: string) => Promise<number>;
+    };
+    return client.incr(key);
   }
 
   async expire(key: string, ttl: number): Promise<boolean> {
-    const result = await this.sendCommand(['EXPIRE', key, String(ttl)]);
-    return Number(result) === 1;
+    const client = this.client as {
+      expire: (key: string, seconds: number) => Promise<number>;
+    };
+    const result = await client.expire(key, ttl);
+    return result === 1;
+  }
+
+  async ttl(key: string): Promise<number> {
+    const client = this.client as {
+      ttl: (key: string) => Promise<number>;
+    };
+    return client.ttl(key);
+  }
+
+  async publish(channel: string, message: string): Promise<number> {
+    const client = this.client as {
+      publish: (channel: string, message: string) => Promise<number>;
+    };
+    return client.publish(channel, message);
+  }
+
+  async subscribe(channel: string, callback: (message: string) => void): Promise<void> {
+    // Bun.redis subscribe uses a different pattern
+    // For simplicity, we'll use the command pattern
+    const client = this.client as {
+      subscribe: (channel: string, callback: (message: string) => void) => Promise<void>;
+    };
+    await client.subscribe(channel, callback);
   }
 }
 
 // ============= Cache Driver Interface =============
 
 interface CacheDriver {
-  get(key: string): Promise<unknown>;
-  set(key: string, value: unknown, ttl?: number): Promise<void>;
+  get(key: string): Promise<string | null>;
+  set(key: string, value: string, ttl?: number): Promise<void>;
   delete(key: string): Promise<boolean>;
   has(key: string): Promise<boolean>;
   clear(): Promise<void>;
-  increment(key: string, by?: number): Promise<number>;
-  decrement(key: string, by?: number): Promise<number>;
-  keys?(pattern: string): Promise<string[]>;
-  ttl?(key: string): Promise<number>;
+  incr(key: string): Promise<number>;
   expire?(key: string, ttl: number): Promise<boolean>;
+  ttl?(key: string): Promise<number>;
+  publish?(channel: string, message: string): Promise<number>;
+  subscribe?(channel: string, callback: (message: string) => void): Promise<void>;
+  destroy?(): void;
 }
 
 // ============= Cache Class =============
@@ -330,10 +340,7 @@ export class Cache {
     
     // Try to parse JSON
     try {
-      if (typeof value === 'string') {
-        return JSON.parse(value) as T;
-      }
-      return value as T;
+      return JSON.parse(value) as T;
     } catch {
       return value as T;
     }
@@ -369,15 +376,21 @@ export class Cache {
    */
   async increment(key: string, by = 1): Promise<number> {
     const fullKey = this.keyPrefix + key;
-    return this.driver.increment(fullKey, by);
+    if (by === 1) {
+      return this.driver.incr(fullKey);
+    }
+    // For non-1 increments, get and set
+    const current = await this.get<number>(key) ?? 0;
+    const newValue = current + by;
+    await this.set(key, newValue);
+    return newValue;
   }
 
   /**
    * Decrement a value
    */
   async decrement(key: string, by = 1): Promise<number> {
-    const fullKey = this.keyPrefix + key;
-    return this.driver.decrement(fullKey, by);
+    return this.increment(key, -by);
   }
 
   /**
@@ -400,19 +413,6 @@ export class Cache {
       return this.driver.expire(fullKey, ttl);
     }
     return false;
-  }
-
-  /**
-   * Find keys matching pattern
-   */
-  async keys(pattern: string): Promise<string[]> {
-    const fullPattern = this.keyPrefix + pattern;
-    if (this.driver.keys) {
-      const keys = await this.driver.keys(fullPattern);
-      // Remove prefix from returned keys
-      return keys.map(k => k.startsWith(this.keyPrefix) ? k.slice(this.keyPrefix.length) : k);
-    }
-    return [];
   }
 
   /**
@@ -463,6 +463,27 @@ export class Cache {
   }
 
   /**
+   * Publish a message to a channel (Redis only)
+   */
+  async publish(channel: string, message: string): Promise<number> {
+    if (this.driver.publish) {
+      return this.driver.publish(channel, message);
+    }
+    console.warn('Publish only available with Redis driver');
+    return 0;
+  }
+
+  /**
+   * Subscribe to a channel (Redis only)
+   */
+  async subscribe(channel: string, callback: (message: string) => void): Promise<void> {
+    if (this.driver.subscribe) {
+      return this.driver.subscribe(channel, callback);
+    }
+    console.warn('Subscribe only available with Redis driver');
+  }
+
+  /**
    * Remember with lock (prevent cache stampede)
    */
   async remember<T>(
@@ -478,7 +499,7 @@ export class Cache {
 
     // Try to acquire lock
     const lockKey = `lock:${key}`;
-    const lockAcquired = await this.driver.has(lockKey);
+    const lockAcquired = await this.has(lockKey);
     
     if (lockAcquired) {
       // Wait and retry
@@ -487,7 +508,7 @@ export class Cache {
     }
 
     // Set lock
-    await this.driver.set(lockKey, '1', lockTimeout);
+    await this.set(lockKey, '1', lockTimeout);
     
     try {
       const value = await factory();
@@ -495,7 +516,7 @@ export class Cache {
       return value;
     } finally {
       // Release lock
-      await this.driver.delete(lockKey);
+      await this.delete(lockKey);
     }
   }
 }
