@@ -49,6 +49,35 @@ export {
   detectDriver,
   QueryBuilder,
   table,
+  ReservedConnection,
+  type DatabaseConfig,
+  type DatabaseDriver,
+  type QueryResult,
+  type Transaction,
+  // Schema
+  SchemaBuilder,
+  createSchema,
+  defineTable,
+  generateCreateTable,
+  generateDropTable,
+  generateCreateIndex,
+  type ColumnType,
+  type ColumnOptions,
+  type TableSchema,
+  type IndexDefinition,
+  type ConstraintDefinition,
+  type TypeScriptType,
+  type InferType,
+  type InferInsertType,
+  // Migrations
+  MigrationRunner,
+  MigrationBuilder,
+  createMigration,
+  createMigrationRunner,
+  generateMigrationId,
+  type Migration,
+  type MigrationRecord,
+  type MigrationOptions,
 } from './database';
 
 // Validation
@@ -98,6 +127,91 @@ export {
   createSessionStore,
 } from './cache';
 
+// SSG
+export {
+  SSG,
+  createSSG,
+  parseMarkdown,
+  parseFrontmatter,
+  type Frontmatter,
+  type Page,
+  type SSGConfig,
+  type LayoutContext,
+  type SiteConfig,
+} from './ssg';
+
+// Storage
+export {
+  Storage,
+  createStorage,
+  type StorageConfig,
+  type UploadOptions,
+  type DownloadOptions,
+  type FileInfo,
+  type ListOptions,
+  type ListResult,
+  type PresignedURLOptions,
+} from './storage';
+
+// Testing
+export {
+  AppTester,
+  createTester,
+  createTestRequest,
+  createTestResponse,
+  createMockContext,
+  createMockContextWithParams,
+  assertStatus,
+  assertOK,
+  assertJSON,
+  assertBody,
+  assertHeader,
+  assertRedirect,
+  snapshotResponse,
+  FixtureFactory,
+  createFixtureFactory,
+  waitFor,
+  sleep,
+  type TestRequestOptions,
+  type TestResponse,
+} from './testing';
+
+// WebSocket
+export {
+  WebSocketServer,
+  WebSocketClient,
+  PubSub,
+  createWebSocketServer,
+  createWebSocketClient,
+  createPubSub,
+  isWebSocketRequest,
+  generateConnectionId,
+  createWebSocketData,
+  type WebSocketData,
+  type WebSocketMessage,
+  type WebSocketOptions,
+  type WebSocketHandler,
+  type OpenHandler,
+  type CloseHandler,
+  type ErrorHandler,
+  type WebSocketServerOptions,
+  type WebSocketClientOptions,
+} from './websocket';
+
+// Logger
+export {
+  Logger,
+  PerformanceLogger,
+  createLogger,
+  createRequestLogger,
+  getLogger,
+  setLogger,
+  type LogLevel,
+  type LogEntry,
+  type LoggerConfig,
+  type LoggerContext,
+} from './logger';
+
 // Types
 export type {
   HTTPMethod,
@@ -111,8 +225,6 @@ export type {
   ContextVariableMap,
   StandardSchema,
   StandardIssue,
-  DatabaseDriver,
-  DatabaseConfig,
   ServerConfig,
   AppOptions,
   BuenoError,
@@ -121,6 +233,10 @@ export type {
 } from './types';
 
 // Quick Start Helper
+import { Router } from './router';
+import { Context } from './context';
+import { compose, type Middleware } from './middleware';
+
 export function createServer(options?: {
   port?: number;
   hostname?: string;
@@ -133,7 +249,7 @@ export function createServer(options?: {
       const server = Bun.serve({
         port,
         hostname,
-        fetch: async (request: Request) => {
+        fetch: async (request: Request): Promise<Response> => {
           const url = new URL(request.url);
           const match = router.match(request.method as 'GET', url.pathname);
           
@@ -144,11 +260,11 @@ export function createServer(options?: {
           const context = new Context(request, match.params);
           
           if (match.middleware && match.middleware.length > 0) {
-            const pipeline = compose(match.middleware);
-            return pipeline(context, match.handler);
+            const pipeline = compose(match.middleware as Middleware[]);
+            return pipeline(context, async () => match.handler(context) as Response);
           }
           
-          return match.handler(context);
+          return match.handler(context) as Response;
         },
       });
       

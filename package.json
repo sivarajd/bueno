@@ -29,7 +29,7 @@
     "router",
     "rpc"
   ],
-  "author": "",
+  "author": "Sivaraj D <sivarajd@gmail.com>",
   "license": "MIT",
   "devDependencies": {
     "@types/bun": "latest",

@@ -16,8 +16,8 @@ export type StatusCode =
 
 export type PathParams = Record<string, string>;
 
-export interface RouteHandler<T = unknown> {
-  (context: unknown): T | Promise<T>;
+export interface RouteHandler<T = unknown, C = unknown> {
+  (context: C): T | Promise<T>;
 }
 
 export type RoutePath = string;
@@ -40,7 +40,7 @@ export type MiddlewareChain = MiddlewareHandler[];
 
 // ============= DI Types =============
 
-export type Token<T = unknown> = string | symbol | abstract new (...args: unknown[]) => T;
+export type Token<T = unknown> = string | symbol | (abstract new (...args: unknown[]) => T);
 
 export interface Provider<T = unknown> {
   token: Token<T>;

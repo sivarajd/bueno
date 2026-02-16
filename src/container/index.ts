@@ -7,6 +7,8 @@
 
 import type { Provider } from '../types';
 
+export type { Provider } from '../types';
+
 // ============= Token =============
 
 /**

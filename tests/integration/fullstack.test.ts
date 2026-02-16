@@ -146,7 +146,7 @@ describe('Integration Tests', () => {
     beforeAll(async () => {
       db = new Database({ url: ':memory:' });
       await db.connect();
-      await db.execute(`
+      await db.raw(`
         CREATE TABLE test_users (
           id INTEGER PRIMARY KEY AUTOINCREMENT,
           name TEXT NOT NULL,
@@ -161,23 +161,26 @@ describe('Integration Tests', () => {
 
     test('should perform CRUD operations', async () => {
       // Create
-      await db.execute("INSERT INTO test_users (name, email) VALUES (?, ?)", ['Test User', 'test@example.com']);
+      await db.raw("INSERT INTO test_users (name, email) VALUES ($1, $2)", ['Test User', 'test@example.com']);
       
       // Read
-      const user = await db.queryOne<{ id: number; name: string; email: string }>(
-        "SELECT * FROM test_users WHERE email = ?",
-        ['test@example.com']
-      );
+      const user = await db.queryOne<{ id: number; name: string; email: string }>`
+        SELECT * FROM test_users WHERE email = ${'test@example.com'}
+      `;
       expect(user?.name).toBe('Test User');
       
       // Update
-      await db.execute("UPDATE test_users SET name = ? WHERE email = ?", ['Updated', 'test@example.com']);
-      const updated = await db.queryOne<{ name: string }>("SELECT name FROM test_users WHERE email = ?", ['test@example.com']);
+      await db.raw("UPDATE test_users SET name = $1 WHERE email = $2", ['Updated', 'test@example.com']);
+      const updated = await db.queryOne<{ name: string }>`
+        SELECT name FROM test_users WHERE email = ${'test@example.com'}
+      `;
       expect(updated?.name).toBe('Updated');
       
       // Delete
-      await db.execute("DELETE FROM test_users WHERE email = ?", ['test@example.com']);
-      const deleted = await db.queryOne("SELECT * FROM test_users WHERE email = ?", ['test@example.com']);
+      await db.raw("DELETE FROM test_users WHERE email = $1", ['test@example.com']);
+      const deleted = await db.queryOne`
+        SELECT * FROM test_users WHERE email = ${'test@example.com'}
+      `;
       expect(deleted).toBeNull();
     });
   });

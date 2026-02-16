@@ -1,63 +1,108 @@
 /**
  * Database Layer
  * 
- * Unified interface over bun:sql supporting PostgreSQL, MySQL, and SQLite.
- * Provides connection pooling, transactions, and query execution.
+ * Unified interface over Bun.SQL supporting PostgreSQL, MySQL, and SQLite.
+ * Uses Bun 1.3+ native SQL client with tagged template literals.
  */
-
-import type { DatabaseConfig, DatabaseDriver } from '../types';
 
 // ============= Types =============
 
-interface QueryResult {
+export type DatabaseDriver = 'postgresql' | 'mysql' | 'sqlite';
+
+export interface DatabaseConfig {
+  url: string;
+  driver?: DatabaseDriver;
+  pool?: {
+    max?: number;
+    idleTimeout?: number;
+    maxLifetime?: number;
+    connectionTimeout?: number;
+  };
+  tls?: boolean | {
+    rejectUnauthorized?: boolean;
+    ca?: string;
+    key?: string;
+    cert?: string;
+  };
+  bigint?: boolean;
+  prepare?: boolean;
+}
+
+export interface QueryResult {
   rows: unknown[];
   rowCount: number;
   insertId?: number | string;
 }
 
-interface PreparedStatement {
-  run(...params: unknown[]): Promise<QueryResult>;
-  all(...params: unknown[]): Promise<unknown[]>;
-  get(...params: unknown[]): Promise<unknown | null>;
-}
-
-type TransactionCallback = (tx: Transaction) => Promise<unknown>;
-
-interface Transaction {
-  execute(sql: string, params?: unknown[]): Promise<QueryResult>;
-  query<T>(sql: string, params?: unknown[]): Promise<T[]>;
-  queryOne<T>(sql: string, params?: unknown[]): Promise<T | null>;
+export interface Transaction {
+  query<T>(strings: TemplateStringsArray, ...params: unknown[]): Promise<T[]>;
+  queryOne<T>(strings: TemplateStringsArray, ...params: unknown[]): Promise<T | null>;
+  execute(strings: TemplateStringsArray, ...params: unknown[]): Promise<QueryResult>;
 }
 
 // ============= Driver Detection =============
 
 /**
- * Detect database driver from connection string or path
+ * Detect database driver from connection string
  */
 export function detectDriver(url: string): DatabaseDriver {
-  // Check for URL scheme
-  if (url.startsWith('postgresql://') || url.startsWith('postgres://')) {
-    return 'postgresql';
-  }
-  if (url.startsWith('mysql://')) {
+  if (url.startsWith('mysql://') || url.startsWith('mysql2://')) {
     return 'mysql';
   }
-  if (url.startsWith('sqlite://')) {
+  if (
+    url.startsWith('sqlite://') ||
+    url.startsWith('file://') ||
+    url.startsWith('file:') ||
+    url === ':memory:' ||
+    url.endsWith('.db') ||
+    url.endsWith('.sqlite') ||
+    url.endsWith('.sqlite3')
+  ) {
     return 'sqlite';
   }
+  // PostgreSQL is the default
+  return 'postgresql';
+}
+
+// ============= SQL Fragment Builder =============
+
+/**
+ * Build SQL fragment for inserts/updates
+ */
+function buildInsertFragment(data: Record<string, unknown>): { columns: string; values: string; params: unknown[] } {
+  const keys = Object.keys(data);
+  const params: unknown[] = [];
+  const placeholders: string[] = [];
   
-  // Assume SQLite for file paths
-  if (url.endsWith('.db') || url.endsWith('.sqlite') || url.endsWith('.sqlite3')) {
-    return 'sqlite';
+  for (const key of keys) {
+    params.push(data[key]);
+    placeholders.push('?');
   }
   
-  // Default to SQLite for :memory: and relative paths
-  if (url === ':memory:' || url.startsWith('./') || url.startsWith('/')) {
-    return 'sqlite';
+  return {
+    columns: `(${keys.join(', ')})`,
+    values: `(${placeholders.join(', ')})`,
+    params,
+  };
+}
+
+/**
+ * Build SET clause for updates
+ */
+function buildSetFragment(data: Record<string, unknown>): { clause: string; params: unknown[] } {
+  const keys = Object.keys(data);
+  const params: unknown[] = [];
+  const sets: string[] = [];
+  
+  for (const key of keys) {
+    params.push(data[key]);
+    sets.push(`${key} = ?`);
   }
   
-  // Default to SQLite
-  return 'sqlite';
+  return {
+    clause: sets.join(', '),
+    params,
+  };
 }
 
 // ============= Database Class =============
@@ -65,35 +110,72 @@ export function detectDriver(url: string): DatabaseDriver {
 export class Database {
   private config: DatabaseConfig;
   private driver: DatabaseDriver;
-  private connection: unknown = null;
+  private sql: unknown = null;
   private _isConnected = false;
 
   constructor(config: DatabaseConfig | string) {
     this.config = typeof config === 'string' ? { url: config } : config;
-    this.driver = detectDriver(this.config.url);
+    this.driver = this.config.driver ?? detectDriver(this.config.url);
+  }
+  
+  /**
+   * Get the driver type
+   */
+  getDriver(): DatabaseDriver {
+    return this.driver;
   }
 
   /**
-   * Connect to the database
+   * Connect to the database using Bun.SQL
    */
   async connect(): Promise<void> {
     if (this._isConnected) return;
 
     try {
-      // Use Bun's built-in SQL
-      const { Database: BunDatabase } = await import('bun:sqlite');
+      // Import Bun's native SQL
+      const { SQL } = await import('bun');
       
+      const options: Record<string, unknown> = {};
+      
+      // Set adapter explicitly if needed
       if (this.driver === 'sqlite') {
-        // Extract path from URL if needed
-        const path = this.config.url.startsWith('sqlite://')
-          ? this.config.url.replace('sqlite://', '')
-          : this.config.url;
-        
-        this.connection = new BunDatabase(path);
+        options.adapter = 'sqlite';
+        // Handle file paths
+        if (!this.config.url.startsWith('sqlite://') && 
+            !this.config.url.startsWith('file:') && 
+            this.config.url !== ':memory:') {
+          options.filename = this.config.url;
+        }
+      }
+      
+      // Pool configuration
+      if (this.config.pool) {
+        if (this.config.pool.max) options.max = this.config.pool.max;
+        if (this.config.pool.idleTimeout) options.idleTimeout = this.config.pool.idleTimeout;
+        if (this.config.pool.maxLifetime) options.maxLifetime = this.config.pool.maxLifetime;
+        if (this.config.pool.connectionTimeout) options.connectionTimeout = this.config.pool.connectionTimeout;
+      }
+      
+      // TLS configuration
+      if (this.config.tls !== undefined) {
+        options.tls = this.config.tls;
+      }
+      
+      // BigInt support
+      if (this.config.bigint !== undefined) {
+        options.bigint = this.config.bigint;
+      }
+      
+      // Prepared statements
+      if (this.config.prepare !== undefined) {
+        options.prepare = this.config.prepare;
+      }
+      
+      // Create connection
+      if (Object.keys(options).length > 0 && !this.config.url.startsWith('sqlite://')) {
+        this.sql = new SQL(this.config.url, options);
       } else {
-        // For PostgreSQL and MySQL, we would use bun:sql
-        // For now, we'll use SQLite as a fallback
-        throw new Error(`Driver ${this.driver} not yet implemented. Use SQLite for now.`);
+        this.sql = new SQL(this.config.url);
       }
 
       this._isConnected = true;
@@ -110,154 +192,311 @@ export class Database {
   }
 
   /**
-   * Get the underlying connection
+   * Get the underlying Bun.SQL instance
    */
-  getConnection(): unknown {
-    return this.connection;
+  getSql(): unknown {
+    return this.sql;
   }
 
   /**
-   * Execute a query that doesn't return rows
+   * Execute a raw SQL query using tagged template literal
    */
-  async execute(sql: string, params: unknown[] = []): Promise<QueryResult> {
+  async query<T = unknown>(strings: TemplateStringsArray, ...values: unknown[]): Promise<T[]> {
     this.ensureConnection();
     
-    const db = this.connection as {
-      run: (sql: string, ...params: unknown[]) => { changes: number; lastInsertRowid: number | bigint };
+    const sql = this.sql as {
+      (strings: TemplateStringsArray, ...values: unknown[]): Promise<T[]>;
     };
     
-    const result = db.run(sql, ...params);
-    
-    return {
-      rows: [],
-      rowCount: result.changes,
-      insertId: Number(result.lastInsertRowid),
-    };
-  }
-
-  /**
-   * Execute a query and return all rows
-   */
-  async query<T = unknown>(sql: string, params: unknown[] = []): Promise<T[]> {
-    this.ensureConnection();
-    
-    const db = this.connection as {
-      query: (sql: string, ...params: unknown[]) => { all: () => T[] };
-    };
-    
-    const stmt = db.query(sql, ...params);
-    return stmt.all();
+    return sql(strings, ...values);
   }
 
   /**
    * Execute a query and return a single row
    */
-  async queryOne<T = unknown>(sql: string, params: unknown[] = []): Promise<T | null> {
-    this.ensureConnection();
-    
-    const db = this.connection as {
-      query: (sql: string, ...params: unknown[]) => { get: (...params: unknown[]) => T | null };
-    };
-    
-    const stmt = db.query(sql);
-    return stmt.get(...params);
+  async queryOne<T = unknown>(strings: TemplateStringsArray, ...values: unknown[]): Promise<T | null> {
+    const results = await this.query<T>(strings, ...values);
+    return results.length > 0 ? results[0] : null;
   }
 
   /**
-   * Create a prepared statement
+   * Execute a query that doesn't return rows
    */
-  prepare(sql: string): PreparedStatement {
+  async execute(strings: TemplateStringsArray, ...values: unknown[]): Promise<QueryResult> {
     this.ensureConnection();
     
-    const db = this.connection as {
-      query: (sql: string) => {
-        run: (...params: unknown[]) => { changes: number; lastInsertRowid: number | bigint };
-        all: (...params: unknown[]) => unknown[];
-        get: (...params: unknown[]) => unknown | null;
-      };
+    const sql = this.sql as {
+      (strings: TemplateStringsArray, ...values: unknown[]): Promise<unknown[]>;
     };
     
-    const stmt = db.query(sql);
+    // For INSERT with RETURNING
+    const results = await sql(strings, ...values);
     
     return {
-      async run(...params: unknown[]): Promise<QueryResult> {
-        const result = stmt.run(...params);
-        return {
-          rows: [],
-          rowCount: result.changes,
-          insertId: Number(result.lastInsertRowid),
-        };
-      },
-      async all(...params: unknown[]): Promise<unknown[]> {
-        return stmt.all(...params);
-      },
-      async get(...params: unknown[]): Promise<unknown | null> {
-        return stmt.get(...params);
-      },
+      rows: results,
+      rowCount: results.length,
     };
+  }
+
+  /**
+   * Execute raw SQL string (unsafe)
+   */
+  async raw<T = unknown>(sqlString: string, params: unknown[] = []): Promise<T[]> {
+    this.ensureConnection();
+    
+    const sql = this.sql as {
+      unsafe: (query: string, params?: unknown[]) => Promise<T[]>;
+    };
+    
+    if (sql.unsafe) {
+      // For SQLite, convert $1, $2 to ? placeholders
+      if (this.driver === 'sqlite') {
+        let query = sqlString;
+        let i = 1;
+        while (query.includes(`$${i}`)) {
+          query = query.replace(`$${i}`, '?');
+          i++;
+        }
+        return sql.unsafe(query, params);
+      }
+      return sql.unsafe(sqlString, params);
+    }
+    
+    throw new Error('Raw SQL not supported');
   }
 
   /**
    * Execute a transaction
    */
-  async transaction<T>(callback: TransactionCallback): Promise<T> {
+  async transaction<T>(callback: (tx: Transaction) => Promise<T>): Promise<T> {
     this.ensureConnection();
     
-    const db = this.connection as {
-      transaction: <R>(callback: () => R) => R;
+    const sql = this.sql as {
+      begin: <R>(fn: (tx: unknown) => Promise<R>) => Promise<R>;
     };
     
-    const tx: Transaction = {
-      execute: async (sql: string, params: unknown[] = []) => {
-        return this.execute(sql, params);
-      },
-      query: async <T>(sql: string, params: unknown[] = []) => {
-        return this.query<T>(sql, params);
-      },
-      queryOne: async <T>(sql: string, params: unknown[] = []) => {
-        return this.queryOne<T>(sql, params);
-      },
+    return sql.begin(async (tx) => {
+      const txWrapper: Transaction = {
+        query: async <T>(strings: TemplateStringsArray, ...values: unknown[]): Promise<T[]> => {
+          const t = tx as {
+            (strings: TemplateStringsArray, ...values: unknown[]): Promise<T[]>;
+          };
+          return t(strings, ...values);
+        },
+        queryOne: async <T>(strings: TemplateStringsArray, ...values: unknown[]): Promise<T | null> => {
+          const results = await txWrapper.query<T>(strings, ...values);
+          return results.length > 0 ? results[0] : null;
+        },
+        execute: async (strings: TemplateStringsArray, ...values: unknown[]): Promise<QueryResult> => {
+          const t = tx as {
+            (strings: TemplateStringsArray, ...values: unknown[]): Promise<unknown[]>;
+          };
+          const results = await t(strings, ...values);
+          return { rows: results, rowCount: results.length };
+        },
+      };
+      
+      return callback(txWrapper);
+    });
+  }
+
+  /**
+   * Begin a distributed transaction (2PC)
+   */
+  async beginDistributed<T>(name: string, callback: (tx: Transaction) => Promise<T>): Promise<T> {
+    this.ensureConnection();
+    
+    const sql = this.sql as {
+      beginDistributed: <R>(name: string, fn: (tx: unknown) => Promise<R>) => Promise<R>;
     };
     
-    // Use Bun's transaction support
-    if (db.transaction) {
-      return db.transaction(() => callback(tx)) as T;
+    if (!sql.beginDistributed) {
+      throw new Error('Distributed transactions not supported for this database');
     }
     
-    // Fallback: manual transaction
-    await this.execute('BEGIN TRANSACTION');
-    try {
-      const result = await callback(tx);
-      await this.execute('COMMIT');
-      return result;
-    } catch (error) {
-      await this.execute('ROLLBACK');
-      throw error;
+    return sql.beginDistributed(name, async (tx) => {
+      const txWrapper: Transaction = {
+        query: async <T>(strings: TemplateStringsArray, ...values: unknown[]): Promise<T[]> => {
+          const t = tx as {
+            (strings: TemplateStringsArray, ...values: unknown[]): Promise<T[]>;
+          };
+          return t(strings, ...values);
+        },
+        queryOne: async <T>(strings: TemplateStringsArray, ...values: unknown[]): Promise<T | null> => {
+          const results = await txWrapper.query<T>(strings, ...values);
+          return results.length > 0 ? results[0] : null;
+        },
+        execute: async (strings: TemplateStringsArray, ...values: unknown[]): Promise<QueryResult> => {
+          const t = tx as {
+            (strings: TemplateStringsArray, ...values: unknown[]): Promise<unknown[]>;
+          };
+          const results = await t(strings, ...values);
+          return { rows: results, rowCount: results.length };
+        },
+      };
+      
+      return callback(txWrapper);
+    });
+  }
+
+  /**
+   * Commit a distributed transaction
+   */
+  async commitDistributed(name: string): Promise<void> {
+    const sql = this.sql as {
+      commitDistributed: (name: string) => Promise<void>;
+    };
+    
+    if (sql.commitDistributed) {
+      await sql.commitDistributed(name);
     }
+  }
+
+  /**
+   * Rollback a distributed transaction
+   */
+  async rollbackDistributed(name: string): Promise<void> {
+    const sql = this.sql as {
+      rollbackDistributed: (name: string) => Promise<void>;
+    };
+    
+    if (sql.rollbackDistributed) {
+      await sql.rollbackDistributed(name);
+    }
+  }
+
+  /**
+   * Reserve a connection from the pool
+   */
+  async reserve(): Promise<ReservedConnection> {
+    this.ensureConnection();
+    
+    const sql = this.sql as {
+      reserve: () => Promise<unknown>;
+    };
+    
+    if (!sql.reserve) {
+      throw new Error('Connection reservation not supported');
+    }
+    
+    const reserved = await sql.reserve();
+    return new ReservedConnection(reserved);
   }
 
   /**
    * Close the connection
    */
-  async close(): Promise<void> {
+  async close(options?: { timeout?: number }): Promise<void> {
     if (!this._isConnected) return;
     
-    const db = this.connection as { close?: () => void };
-    if (db.close) {
-      db.close();
+    const sql = this.sql as {
+      close: (options?: { timeout?: number }) => Promise<void>;
+    };
+    
+    if (sql.close) {
+      await sql.close(options);
     }
     
-    this.connection = null;
+    this.sql = null;
     this._isConnected = false;
+  }
+
+  /**
+   * Get values format
+   */
+  async values(strings: TemplateStringsArray, ...values: unknown[]): Promise<unknown[][]> {
+    this.ensureConnection();
+    
+    const sql = this.sql as {
+      (strings: TemplateStringsArray, ...values: unknown[]): { values: () => Promise<unknown[][]> };
+    };
+    
+    return sql(strings, ...values).values();
+  }
+
+  /**
+   * Get raw format (Buffer arrays)
+   */
+  async rawFormat(strings: TemplateStringsArray, ...values: unknown[]): Promise<Buffer[][]> {
+    this.ensureConnection();
+    
+    const sql = this.sql as {
+      (strings: TemplateStringsArray, ...values: unknown[]): { raw: () => Promise<Buffer[][]> };
+    };
+    
+    return sql(strings, ...values).raw();
+  }
+
+  /**
+   * Execute a simple query (multiple statements allowed)
+   */
+  async simple(strings: TemplateStringsArray, ...values: unknown[]): Promise<unknown[]> {
+    this.ensureConnection();
+    
+    const sql = this.sql as {
+      (strings: TemplateStringsArray, ...values: unknown[]): { simple: () => Promise<unknown[]> };
+    };
+    
+    return sql(strings, ...values).simple();
+  }
+
+  /**
+   * Execute SQL from a file
+   */
+  async file(path: string, params: unknown[] = []): Promise<unknown[]> {
+    this.ensureConnection();
+    
+    const sql = this.sql as {
+      file: (path: string, params?: unknown[]) => Promise<unknown[]>;
+    };
+    
+    if (sql.file) {
+      return sql.file(path, params);
+    }
+    
+    throw new Error('File execution not supported');
   }
 
   /**
    * Ensure connection is established
    */
   private ensureConnection(): void {
-    if (!this._isConnected || !this.connection) {
+    if (!this._isConnected || !this.sql) {
       throw new Error('Database not connected. Call connect() first.');
     }
+  }
+}
+
+// ============= Reserved Connection =============
+
+export class ReservedConnection {
+  private connection: unknown;
+
+  constructor(connection: unknown) {
+    this.connection = connection;
+  }
+
+  async query<T>(strings: TemplateStringsArray, ...values: unknown[]): Promise<T[]> {
+    const conn = this.connection as {
+      (strings: TemplateStringsArray, ...values: unknown[]): Promise<T[]>;
+    };
+    return conn(strings, ...values);
+  }
+
+  async queryOne<T>(strings: TemplateStringsArray, ...values: unknown[]): Promise<T | null> {
+    const results = await this.query<T>(strings, ...values);
+    return results.length > 0 ? results[0] : null;
+  }
+
+  release(): void {
+    const conn = this.connection as { release: () => void };
+    if (conn.release) {
+      conn.release();
+    }
+  }
+
+  [Symbol.dispose](): void {
+    this.release();
   }
 }
 
@@ -272,102 +511,171 @@ export async function createConnection(config: DatabaseConfig | string): Promise
   return db;
 }
 
-// ============= Query Builder Helpers =============
+// ============= Query Builder =============
 
 /**
  * Simple query builder for common operations
  */
 export class QueryBuilder<T = unknown> {
-  private table: string;
   private db: Database;
+  private tableName: string;
   
-  constructor(db: Database, table: string) {
+  constructor(db: Database, tableName: string) {
     this.db = db;
-    this.table = table;
+    this.tableName = tableName;
   }
 
   /**
    * Select all rows
    */
   async all(): Promise<T[]> {
-    return this.db.query<T>(`SELECT * FROM ${this.table}`);
+    return this.db.raw<T>(`SELECT * FROM ${this.tableName}`);
   }
 
   /**
    * Find by ID
    */
   async findById(id: number | string): Promise<T | null> {
-    return this.db.queryOne<T>(`SELECT * FROM ${this.table} WHERE id = ?`, [id]);
+    const results = await this.db.raw<T>(
+      `SELECT * FROM ${this.tableName} WHERE id = $1`,
+      [id]
+    );
+    return results.length > 0 ? results[0] : null;
   }
 
   /**
    * Find by field
    */
   async findBy(field: string, value: unknown): Promise<T[]> {
-    return this.db.query<T>(`SELECT * FROM ${this.table} WHERE ${field} = ?`, [value]);
+    // Note: Field name needs to be safely inserted
+    const sql = `SELECT * FROM ${this.tableName} WHERE ${field} = $1`;
+    return this.db.raw<T>(sql, [value]);
   }
 
   /**
    * Find one by field
    */
   async findOneBy(field: string, value: unknown): Promise<T | null> {
-    return this.db.queryOne<T>(`SELECT * FROM ${this.table} WHERE ${field} = ? LIMIT 1`, [value]);
+    const results = await this.findBy(field, value);
+    return results.length > 0 ? results[0] : null;
   }
 
   /**
    * Insert a row
    */
-  async insert(data: Partial<T>): Promise<number | string> {
+  async insert(data: Partial<T>): Promise<T> {
     const keys = Object.keys(data);
     const values = Object.values(data);
-    const placeholders = values.map(() => '?').join(', ');
     
-    const result = await this.db.execute(
-      `INSERT INTO ${this.table} (${keys.join(', ')}) VALUES (${placeholders})`,
+    const columns = keys.join(', ');
+    const placeholders = values.map((_, i) => `$${i + 1}`).join(', ');
+    
+    const result = await this.db.raw<T>(
+      `INSERT INTO ${this.tableName} (${columns}) VALUES (${placeholders}) RETURNING *`,
       values
     );
     
-    return result.insertId ?? 0;
+    return result[0];
+  }
+
+  /**
+   * Bulk insert
+   */
+  async insertMany(items: Partial<T>[]): Promise<T[]> {
+    if (items.length === 0) return [];
+    
+    const results: T[] = [];
+    
+    for (const item of items) {
+      const result = await this.insert(item);
+      results.push(result);
+    }
+    
+    return results;
   }
 
   /**
    * Update by ID
    */
-  async updateById(id: number | string, data: Partial<T>): Promise<number> {
+  async updateById(id: number | string, data: Partial<T>): Promise<T | null> {
     const keys = Object.keys(data);
     const values = Object.values(data);
-    const setClause = keys.map(k => `${k} = ?`).join(', ');
     
-    const result = await this.db.execute(
-      `UPDATE ${this.table} SET ${setClause} WHERE id = ?`,
+    const setClause = keys.map((k, i) => `${k} = $${i + 1}`).join(', ');
+    
+    const result = await this.db.raw<T>(
+      `UPDATE ${this.tableName} SET ${setClause} WHERE id = $${keys.length + 1} RETURNING *`,
       [...values, id]
     );
     
-    return result.rowCount;
+    return result.length > 0 ? result[0] : null;
   }
 
   /**
    * Delete by ID
    */
-  async deleteById(id: number | string): Promise<number> {
-    const result = await this.db.execute(
-      `DELETE FROM ${this.table} WHERE id = ?`,
+  async deleteById(id: number | string): Promise<boolean> {
+    const result = await this.db.raw(
+      `DELETE FROM ${this.tableName} WHERE id = $1 RETURNING id`,
       [id]
     );
-    
-    return result.rowCount;
+    return result.length > 0;
   }
 
   /**
    * Count rows
    */
-  async count(where?: string, params?: unknown[]): Promise<number> {
+  async count(where?: string, params: unknown[] = []): Promise<number> {
     const sql = where
-      ? `SELECT COUNT(*) as count FROM ${this.table} WHERE ${where}`
-      : `SELECT COUNT(*) as count FROM ${this.table}`;
+      ? `SELECT COUNT(*) as count FROM ${this.tableName} WHERE ${where}`
+      : `SELECT COUNT(*) as count FROM ${this.tableName}`;
     
-    const result = await this.db.queryOne<{ count: number }>(sql, params);
-    return result?.count ?? 0;
+    const result = await this.db.raw<{ count: number | string }>(sql, params);
+    return Number(result[0]?.count ?? 0);
+  }
+
+  /**
+   * Check if exists
+   */
+  async exists(where: string, params: unknown[] = []): Promise<boolean> {
+    const count = await this.count(where, params);
+    return count > 0;
+  }
+
+  /**
+   * Paginate results
+   */
+  async paginate(page: number, limit: number, where?: string, params: unknown[] = []): Promise<{
+    data: T[];
+    total: number;
+    page: number;
+    limit: number;
+    totalPages: number;
+  }> {
+    const offset = (page - 1) * limit;
+    
+    const whereClause = where ? `WHERE ${where}` : '';
+    
+    const [data, countResult] = await Promise.all([
+      this.db.raw<T>(
+        `SELECT * FROM ${this.tableName} ${whereClause} LIMIT $${params.length + 1} OFFSET $${params.length + 2}`,
+        [...params, limit, offset]
+      ),
+      this.db.raw<{ count: number | string }>(
+        `SELECT COUNT(*) as count FROM ${this.tableName} ${whereClause}`,
+        params
+      ),
+    ]);
+    
+    const total = Number(countResult[0]?.count ?? 0);
+    
+    return {
+      data,
+      total,
+      page,
+      limit,
+      totalPages: Math.ceil(total / limit),
+    };
   }
 }
 
@@ -377,3 +685,28 @@ export class QueryBuilder<T = unknown> {
 export function table<T = unknown>(db: Database, tableName: string): QueryBuilder<T> {
   return new QueryBuilder<T>(db, tableName);
 }
+
+// ============= SQL Helpers =============
+
+/**
+ * Create a SQL fragment for safe table/column names
+ */
+export function sqlFragment(name: string): string {
+  // Escape identifiers
+  return name.replace(/"/g, '""');
+}
+
+/**
+ * Build an IN clause
+ */
+export function buildInClause(values: unknown[]): { placeholder: string; params: unknown[] } {
+  const placeholders = values.map(() => '?').join(', ');
+  return {
+    placeholder: `(${placeholders})`,
+    params: values,
+  };
+}
+
+// Re-export schema and migrations
+export * from './schema';
+export * from './migrations';
