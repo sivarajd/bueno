@@ -90,10 +90,12 @@ describe('TestDatabase', () => {
 		await db.query('SELECT * FROM test');
 		await db.execute('INSERT INTO test (id, value) VALUES (1, ?)', ['x']);
 
-		expect(db.operations).toHaveLength(2);
-		expect(db.operations[0].type).toBe('query');
-		expect(db.operations[1].type).toBe('execute');
-		expect(db.operations[1].sql).toContain('INSERT');
+		// Note: createTestDatabase internally calls execute() to create the table, adding 1 operation
+		expect(db.operations).toHaveLength(3);
+		expect(db.operations[0].type).toBe('execute'); // schema creation
+		expect(db.operations[1].type).toBe('query');
+		expect(db.operations[2].type).toBe('execute');
+		expect(db.operations[2].sql).toContain('INSERT');
 
 		await db.close();
 	});
@@ -167,8 +169,9 @@ describe('TestDatabase', () => {
 
 		await db.reset();
 
-		expect(await db.getTables()).toHaveLength(0);
+		// Check operations BEFORE calling getTables() (which internally calls query())
 		expect(db.operations).toHaveLength(0);
+		expect(await db.getTables()).toHaveLength(0);
 
 		await db.close();
 	});
