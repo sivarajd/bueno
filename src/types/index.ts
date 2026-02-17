@@ -110,7 +110,7 @@ export interface ContextDefaults {
 
 /**
  * Standard Schema v1 interface
- * Works with Zod 4, Valibot v1, ArkType, and any Standard Schema compliant validator
+ * Works with Zod 4, Valibot v1, ArkType, Typia, and any Standard Schema compliant validator
  */
 export interface StandardSchema<Input = unknown, Output = Input> {
 	readonly "~standard": {

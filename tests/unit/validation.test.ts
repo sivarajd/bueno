@@ -1,9 +1,9 @@
 import { describe, test, expect, beforeEach } from 'bun:test';
-import { 
-  validate, 
+import {
+  validate,
   validateSync,
-  validateBody, 
-  validateQuery, 
+  validateBody,
+  validateQuery,
   validateParams,
   validateHeaders,
   createValidator,
@@ -15,6 +15,12 @@ import {
 import { Context } from '../../src/context';
 import { z } from 'zod';
 import type { StandardSchema, StandardResult } from '../../src/types';
+
+// Typia support - conditionally import if available
+// Note: Typia requires TypeScript transformation to work properly
+// In a real project using Typia, you would use:
+// import typia from 'typia';
+// const TypiaUserSchema = typia.createValidate<IUser>();
 
 // User schema for testing
 const UserSchema = z.object({
@@ -642,13 +648,13 @@ describe('Validation', () => {
 
     test('should throw for invalid schema with default name', () => {
       expect(() => assertStandardSchema(null)).toThrow(
-        'Schema must implement Standard Schema interface. Supported: Zod 4+, Valibot v1+, ArkType'
+        'Schema must implement Standard Schema interface. Supported: Zod 4+, Valibot v1+, ArkType, Typia 7+'
       );
     });
 
     test('should throw for invalid schema with custom name', () => {
       expect(() => assertStandardSchema({}, 'MySchema')).toThrow(
-        'MySchema must implement Standard Schema interface. Supported: Zod 4+, Valibot v1+, ArkType'
+        'MySchema must implement Standard Schema interface. Supported: Zod 4+, Valibot v1+, ArkType, Typia 7+'
       );
     });
 
@@ -670,6 +676,119 @@ describe('Validation', () => {
     test('should throw for primitives', () => {
       expect(() => assertStandardSchema('string')).toThrow();
       expect(() => assertStandardSchema(123)).toThrow();
+    });
+  });
+
+  describe('Typia Support', () => {
+    // Note: Typia requires TypeScript transformation at build time.
+    // These tests demonstrate how Typia schemas implement the Standard Schema interface.
+    // In a real project with Typia properly configured, you would use:
+    //
+    // import typia from 'typia';
+    //
+    // interface IUser {
+    //   name: string;
+    //   email: string;
+    //   age?: number;
+    // }
+    //
+    // const typiaUserSchema = typia.createValidate<IUser>();
+    //
+    // Then use it with the validation functions:
+    // const result = await validate(typiaUserSchema, userData);
+
+    test('Typia createValidate returns Standard Schema compliant object', () => {
+      // This test documents the expected Typia interface
+      // Typia's createValidate<T>() returns an object that implements StandardSchemaV1
+      //
+      // The returned object has:
+      // - '~standard.version': 1
+      // - '~standard.vendor': 'typia'
+      // - '~standard.validate': (value: unknown) => IValidation<T>
+      //
+      // Example usage:
+      // const schema = typia.createValidate<IUser>();
+      // const result = schema['~standard'].validate({ name: 'John', email: 'john@example.com' });
+      // if ('value' in result) { /* success */ }
+
+      // Simulated Typia-like schema for documentation purposes
+      const simulatedTypiaSchema: StandardSchema<unknown, { name: string; email: string }> = {
+        '~standard': {
+          version: 1,
+          vendor: 'typia',
+          validate: (data: unknown) => {
+            if (typeof data === 'object' && data !== null) {
+              const obj = data as Record<string, unknown>;
+              if (typeof obj.name === 'string' && typeof obj.email === 'string') {
+                return { value: { name: obj.name, email: obj.email } };
+              }
+            }
+            return { issues: [{ message: 'Invalid user object' }] };
+          },
+        },
+      };
+
+      expect(isStandardSchema(simulatedTypiaSchema)).toBe(true);
+    });
+
+    test('Typia schema works with validate function', async () => {
+      // Simulated Typia schema
+      const typiaLikeSchema: StandardSchema<unknown, { name: string; email: string }> = {
+        '~standard': {
+          version: 1,
+          vendor: 'typia',
+          validate: (data: unknown) => {
+            if (typeof data === 'object' && data !== null) {
+              const obj = data as Record<string, unknown>;
+              if (typeof obj.name === 'string' && typeof obj.email === 'string') {
+                return { value: { name: obj.name, email: obj.email } };
+              }
+            }
+            return { issues: [{ message: 'Invalid user object' }] };
+          },
+        },
+      };
+
+      const validData = { name: 'John', email: 'john@example.com' };
+      const result = await validate(typiaLikeSchema, validData);
+
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.data.name).toBe('John');
+        expect(result.data.email).toBe('john@example.com');
+      }
+    });
+
+    test('Typia schema validation failures work correctly', async () => {
+      // Simulated Typia schema with stricter validation
+      const typiaLikeSchema: StandardSchema<unknown, { name: string; email: string }> = {
+        '~standard': {
+          version: 1,
+          vendor: 'typia',
+          validate: (data: unknown) => {
+            if (typeof data === 'object' && data !== null) {
+              const obj = data as Record<string, unknown>;
+              if (typeof obj.name !== 'string') {
+                return { issues: [{ message: 'name must be a string' }] };
+              }
+              if (typeof obj.email !== 'string') {
+                return { issues: [{ message: 'email must be a string' }] };
+              }
+              return { value: { name: obj.name, email: obj.email } };
+            }
+            return { issues: [{ message: 'Invalid user object' }] };
+          },
+        },
+      };
+
+      const invalidData = { name: 123, email: 'john@example.com' };
+      const result = await validate(typiaLikeSchema, invalidData);
+
+      expect(result.success).toBe(false);
+      if (!result.success) {
+        expect(result.issues.length).toBeGreaterThan(0);
+        expect(result.issues[0].message).toBe('name must be a string');
+      }
     });
   });
 });

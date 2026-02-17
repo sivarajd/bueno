@@ -2,7 +2,7 @@
  * Validation System
  *
  * Multi-validator support using Standard Schema interface.
- * Works with Zod 4, Valibot v1, ArkType, and any Standard Schema compliant library.
+ * Works with Zod 4, Valibot v1, ArkType, Typia, and any Standard Schema compliant library.
  */
 
 import type { Context } from "../context";
@@ -35,6 +35,7 @@ export interface ValidatorOptions {
  * - Zod 4+ (zod)
  * - Valibot v1+ (valibot)
  * - ArkType (arktype)
+ * - Typia 7+ (typia) - use typia.createValidate<T>() for Standard Schema compatibility
  * - Any library implementing Standard Schema
  */
 export async function validate<T>(
@@ -269,7 +270,7 @@ export function assertStandardSchema(
 ): asserts schema is StandardSchema {
 	if (!isStandardSchema(schema)) {
 		throw new Error(
-			`${name} must implement Standard Schema interface. Supported: Zod 4+, Valibot v1+, ArkType`,
-		);
+				`${name} must implement Standard Schema interface. Supported: Zod 4+, Valibot v1+, ArkType, Typia 7+`,
+			);
 	}
 }
