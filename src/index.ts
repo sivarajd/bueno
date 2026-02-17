@@ -61,7 +61,7 @@ export {
 	QueryBuilder,
 	table,
 	ReservedConnection,
-	type DatabaseConfig,
+	type DatabaseConfig as DatabaseConfigType,
 	type DatabaseDriver,
 	type QueryResult,
 	type Transaction,
@@ -245,7 +245,7 @@ export {
 	setLogger,
 	type LogLevel,
 	type LogEntry,
-	type LoggerConfig,
+	type LoggerConfig as LoggerConfigType,
 	type LoggerContext,
 } from "./logger";
 
@@ -291,6 +291,75 @@ export type {
 	InferInput,
 	InferOutput,
 } from "./types";
+
+// Configuration
+export {
+	ConfigManager,
+	defineConfig,
+	defineConfigFn,
+	createConfigManager,
+	createConfigManagerSync,
+	loadConfigDirect,
+	getConfigManager,
+	setConfigManager,
+	type ConfigManagerOptions,
+	type ConfigChangeCallback,
+} from "./config";
+export {
+	loadConfig,
+	loadConfigFile,
+	loadConfigFiles,
+	findConfigFile,
+	clearConfigCache,
+	getCachedConfig,
+	watchConfig,
+	validateConfigStructure,
+	getConfigPathFromArgs,
+	getConfigPathFromEnv,
+	type LoadedConfig,
+} from "./config";
+export {
+	loadEnv,
+	getEnvConfig,
+	getEnvValue,
+	setEnvValue,
+	envConfigMapping,
+	type EnvConfigMapping,
+} from "./config";
+export {
+	validateConfig,
+	validateConfigSync,
+	validateConfigDefaults,
+	validateWithSchema,
+	assertValidConfig,
+	formatValidationErrors,
+	createConfigError,
+	createCustomValidator,
+	isStandardSchema as isConfigStandardSchema,
+	type ConfigValidationResult,
+	type ConfigValidationError,
+	type ConfigValidationWarning,
+} from "./config";
+export {
+	deepMerge,
+	mergeConfigs,
+	isObject,
+} from "./config";
+export type {
+	BuenoConfig,
+	ServerConfig as BuenoServerConfig,
+	DatabaseConfig,
+	CacheConfig,
+	LoggerConfig,
+	HealthConfig,
+	MetricsConfig,
+	TelemetryConfig,
+	FrontendConfig,
+	DeepPartial,
+	UserConfig,
+	UserConfigFn,
+	InferConfig,
+} from "./config";
 
 import { Context } from "./context";
 import { type Middleware, compose } from "./middleware";

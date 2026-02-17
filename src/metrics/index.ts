@@ -189,7 +189,7 @@ export class MetricsCollector {
 	private maxHistorySize: number;
 	private measureEventLoopLagEnabled: boolean;
 	private periodicTimer: Timer | null = null;
-	private lastCpuUsage: NodeJS.CpuUsage | null = null;
+	private lastCpuUsage: NodeJS.CpuUsage | undefined = undefined;
 
 	constructor(options: MetricsCollectorOptions = {}) {
 		this.maxHistorySize = options.maxHistorySize ?? 100;
@@ -348,7 +348,7 @@ export class MetricsCollector {
 	 */
 	reset(): void {
 		this.history = [];
-		this.lastCpuUsage = null;
+		this.lastCpuUsage = undefined;
 	}
 
 	/**

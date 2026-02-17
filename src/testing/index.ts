@@ -1506,10 +1506,20 @@ export class TestStorage {
  * @param options - Optional configuration
  */
 export async function createTestStorage(options: TestStorageOptions = {}): Promise<TestStorage> {
-	const basePath = options.basePath ?? await Bun.makeTempDir("bueno-test-storage-");
+	const basePath = options.basePath ?? await createTempDir("bueno-test-storage-");
 	const storage = new TestStorage(basePath);
 	await storage.init();
 	return storage;
+}
+
+/**
+ * Create a temporary directory
+ */
+async function createTempDir(prefix: string): Promise<string> {
+	const { mkdtemp } = await import("node:fs/promises");
+	const { tmpdir } = await import("node:os");
+	const { join } = await import("node:path");
+	return mkdtemp(join(tmpdir(), prefix));
 }
 
 // ============= Storage Assertions =============
