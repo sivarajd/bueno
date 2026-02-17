@@ -3,11 +3,19 @@
  *
  * Provides inversion of control for managing dependencies
  * with support for constructor injection, factories, and scopes.
+ * Supports circular dependency resolution via forward references.
  */
 
 import type { Provider } from "../types";
+import {
+	type ForwardRef,
+	forwardRef,
+	isForwardRef,
+	resolveForwardRef,
+} from "./forward-ref";
 
 export type { Provider } from "../types";
+export { type ForwardRef, forwardRef, isForwardRef, resolveForwardRef };
 
 // ============= Token =============
 
@@ -31,6 +39,11 @@ interface ResolvedProvider<T = unknown> {
 
 class ResolutionStack {
 	private stack = new Set<Token>();
+	/**
+	 * Track tokens that are being lazily resolved for circular dependencies.
+	 * These tokens have a proxy placeholder that will be resolved later.
+	 */
+	private lazyResolutions = new Map<Token, { resolved: boolean; instance?: unknown }>();
 
 	push(token: Token): void {
 		if (this.stack.has(token)) {
@@ -47,6 +60,34 @@ class ResolutionStack {
 
 	has(token: Token): boolean {
 		return this.stack.has(token);
+	}
+
+	/**
+	 * Mark a token as being lazily resolved (for circular dependency support)
+	 */
+	markLazy(token: Token, placeholder: { resolved: boolean; instance?: unknown }): void {
+		this.lazyResolutions.set(token, placeholder);
+	}
+
+	/**
+	 * Check if a token has a lazy resolution placeholder
+	 */
+	hasLazy(token: Token): boolean {
+		return this.lazyResolutions.has(token);
+	}
+
+	/**
+	 * Get the lazy resolution placeholder for a token
+	 */
+	getLazy(token: Token): { resolved: boolean; instance?: unknown } | undefined {
+		return this.lazyResolutions.get(token);
+	}
+
+	/**
+	 * Clear lazy resolution for a token after it's fully resolved
+	 */
+	clearLazy(token: Token): void {
+		this.lazyResolutions.delete(token);
 	}
 }
 
@@ -102,11 +143,9 @@ export class Container {
 
 		const { provider } = resolved;
 
-		// Check for circular dependencies
+		// Check for circular dependencies - return a lazy proxy instead of throwing
 		if (this.resolutionStack.has(token as Token)) {
-			throw new Error(
-				`Circular dependency detected while resolving: ${String(token)}`,
-			);
+			return this.createLazyProxy<T>(token as Token, resolved);
 		}
 
 		// Singleton: return cached instance if available
@@ -129,6 +168,78 @@ export class Container {
 		} finally {
 			this.resolutionStack.pop(token as Token);
 		}
+	}
+
+	/**
+	 * Create a lazy proxy for circular dependency resolution.
+	 * The proxy will resolve the actual instance on first property access.
+	 */
+	private createLazyProxy<T>(token: Token, resolved: ResolvedProvider): T {
+		// Check if we already have a lazy placeholder for this token
+		const existingLazy = this.resolutionStack.getLazy(token);
+		if (existingLazy && existingLazy.instance) {
+			return existingLazy.instance as T;
+		}
+
+		// Create a placeholder that will be resolved later
+		const placeholder: { resolved: boolean; instance?: T } = {
+			resolved: false,
+		};
+		this.resolutionStack.markLazy(token, placeholder);
+
+		// Create a proxy that lazily resolves the dependency
+		const proxy = new Proxy({} as T, {
+			get: (target: T, prop: string | symbol): unknown => {
+				// If already resolved, return the cached value
+				if (placeholder.resolved && placeholder.instance) {
+					const value = (placeholder.instance as Record<string | symbol, unknown>)[prop];
+					return typeof value === 'function' ? value.bind(placeholder.instance) : value;
+				}
+
+				// Resolve the actual instance
+				// At this point, the circular dependency chain has completed
+				// and we can safely get the instance from the resolved provider
+				if (resolved.instance !== undefined) {
+					placeholder.instance = resolved.instance as T;
+					placeholder.resolved = true;
+				} else {
+					// If not yet cached, we need to wait for the resolution to complete
+					// This happens when the proxy is accessed during construction
+					// Return a function that will resolve later
+					if (prop === 'then') {
+						// Make the proxy thenable for async contexts
+						return undefined;
+					}
+				}
+
+				// Try to get the value from the resolved instance
+				if (placeholder.instance) {
+					const value = (placeholder.instance as Record<string | symbol, unknown>)[prop];
+					return typeof value === 'function' ? value.bind(placeholder.instance) : value;
+				}
+
+				// Return a no-op function for method calls during construction
+				return () => undefined;
+			},
+			
+			set: (target: T, prop: string | symbol, value: unknown): boolean => {
+				if (placeholder.instance) {
+					(placeholder.instance as Record<string | symbol, unknown>)[prop] = value;
+					return true;
+				}
+				return false;
+			},
+			
+			has: (target: T, prop: string | symbol): boolean => {
+				if (placeholder.instance) {
+					return prop in (placeholder.instance as object);
+				}
+				return false;
+			},
+		});
+
+		placeholder.instance = proxy;
+		return proxy;
 	}
 
 	/**
@@ -158,10 +269,14 @@ export class Container {
 	}
 
 	/**
-	 * Resolve an array of dependency tokens
+	 * Resolve an array of dependency tokens (including ForwardRef support)
 	 */
-	private resolveDeps(tokens: Token[]): unknown[] {
-		return tokens.map((token) => this.resolve(token));
+	private resolveDeps(tokens: Array<Token | ForwardRef<Token>>): unknown[] {
+		return tokens.map((tokenOrRef) => {
+			// Resolve forward reference if needed
+			const token = resolveForwardRef(tokenOrRef);
+			return this.resolve(token);
+		});
 	}
 
 	/**
@@ -227,17 +342,30 @@ export function Injectable(token?: Token): ClassDecorator {
 }
 
 /**
- * Helper to create parameter injection metadata
+ * Helper to create parameter injection metadata.
+ * Supports both Token and ForwardRef<Token> for circular dependency resolution.
+ *
+ * @param token - The injection token or a forward reference to the token
+ * @returns A parameter decorator that registers the injection metadata
+ *
+ * @example
+ * ```typescript
+ * // Regular injection
+ * constructor(@Inject(MY_TOKEN) private service: MyService) {}
+ *
+ * // Forward reference for circular dependency
+ * constructor(@Inject(forwardRef(() => ServiceB)) private serviceB: ServiceB) {}
+ * ```
  */
-export function Inject(token: Token): ParameterDecorator {
+export function Inject(token: Token | ForwardRef<Token>): ParameterDecorator {
 	return (
 		target: unknown,
 		propertyKey: string | symbol | undefined,
 		parameterIndex: number,
 	) => {
 		const targetObj = target as object;
-		const existingTokens: Token[] =
-			getContainerMetadata<Token[]>(targetObj, "inject:tokens") ?? [];
+		const existingTokens: Array<Token | ForwardRef<Token>> =
+			getContainerMetadata<Array<Token | ForwardRef<Token>>>(targetObj, "inject:tokens") ?? [];
 		existingTokens[parameterIndex] = token;
 		setContainerMetadata(targetObj, "inject:tokens", existingTokens);
 	};

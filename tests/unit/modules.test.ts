@@ -130,8 +130,9 @@ describe('Module System', () => {
       expect(app.container).toBeInstanceOf(Container);
     });
 
-    test('should resolve imported module providers', () => {
+    test('should resolve imported module providers', async () => {
       const app = createApp(TestAppModule);
+      await app.init();
       const userService = app.container.resolve(USER_SERVICE_TOKEN);
       
       expect(userService).toBeDefined();

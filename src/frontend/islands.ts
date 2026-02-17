@@ -229,7 +229,7 @@ export class IslandManager {
 			.replace(/&/g, "&")
 			.replace(/</g, "<")
 			.replace(/>/g, ">")
-			.replace(/"/g, """)
+			.replace(/"/g, "\"")
 			.replace(/'/g, "'");
 	}
 
