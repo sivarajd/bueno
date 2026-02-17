@@ -249,6 +249,26 @@ export {
 	type LoggerContext,
 } from "./logger";
 
+// Health Check
+export {
+	HealthCheckManager,
+	createHealthMiddleware,
+	createHealthManager,
+	createDatabaseCheck,
+	createCacheCheck,
+	createCustomCheck,
+	createTCPCheck,
+	createHTTPCheck,
+	type HealthStatus,
+	type CheckResult,
+	type HealthCheckResult,
+	type HealthCheckFn,
+	type CheckOptions,
+	type HealthMiddlewareOptions,
+	type DatabaseLike,
+	type CacheLike,
+} from "./health";
+
 // Types
 export type {
 	HTTPMethod,

@@ -9,6 +9,21 @@
 
 export type DatabaseDriver = "postgresql" | "mysql" | "sqlite";
 
+/**
+ * Database metrics for observability
+ */
+export interface DatabaseMetrics {
+	queries: number; // SELECT operations
+	inserts: number;
+	updates: number;
+	deletes: number;
+	errors: number;
+	avgLatency: number; // in milliseconds
+	totalLatency: number;
+	slowQueries: number; // queries exceeding slowQueryThreshold
+	totalOperations: number;
+}
+
 export interface DatabaseConfig {
 	url: string;
 	driver?: DatabaseDriver;
@@ -28,6 +43,8 @@ export interface DatabaseConfig {
 		  };
 	bigint?: boolean;
 	prepare?: boolean;
+	enableMetrics?: boolean; // Enable metrics collection (default: true)
+	slowQueryThreshold?: number; // Threshold in ms to flag slow queries (default: 100)
 }
 
 export interface QueryResult {
@@ -47,6 +64,28 @@ export interface Transaction {
 		...params: unknown[]
 	): Promise<QueryResult>;
 }
+
+/**
+ * Query event types for event emission
+ */
+export type QueryEventType = "query:start" | "query:end" | "query:error";
+
+/**
+ * Query event data
+ */
+export interface QueryEvent {
+	type: QueryEventType;
+	sql?: string;
+	params?: unknown[];
+	latency?: number;
+	error?: Error;
+	operationType?: "query" | "insert" | "update" | "delete" | "other";
+}
+
+/**
+ * Query event listener
+ */
+export type QueryEventListener = (event: QueryEvent) => void;
 
 // ============= Driver Detection =============
 
@@ -120,6 +159,18 @@ function buildSetFragment(data: Record<string, unknown>): {
 	};
 }
 
+/**
+ * Detect operation type from SQL string
+ */
+function detectOperationType(sql: string): "query" | "insert" | "update" | "delete" | "other" {
+	const normalizedSql = sql.trim().toUpperCase();
+	if (normalizedSql.startsWith("SELECT")) return "query";
+	if (normalizedSql.startsWith("INSERT")) return "insert";
+	if (normalizedSql.startsWith("UPDATE")) return "update";
+	if (normalizedSql.startsWith("DELETE")) return "delete";
+	return "other";
+}
+
 // ============= Database Class =============
 
 export class Database {
@@ -128,9 +179,148 @@ export class Database {
 	private sql: unknown = null;
 	private _isConnected = false;
 
+	// Metrics tracking
+	private enableMetrics: boolean;
+	private slowQueryThreshold: number;
+	private metrics: DatabaseMetrics = {
+		queries: 0,
+		inserts: 0,
+		updates: 0,
+		deletes: 0,
+		errors: 0,
+		avgLatency: 0,
+		totalLatency: 0,
+		slowQueries: 0,
+		totalOperations: 0,
+	};
+
+	// Event listeners
+	private eventListeners: Map<QueryEventType, Set<QueryEventListener>> = new Map();
+
 	constructor(config: DatabaseConfig | string) {
 		this.config = typeof config === "string" ? { url: config } : config;
 		this.driver = this.config.driver ?? detectDriver(this.config.url);
+		this.enableMetrics = this.config.enableMetrics ?? true;
+		this.slowQueryThreshold = this.config.slowQueryThreshold ?? 100;
+	}
+
+	/**
+	 * Get current timestamp in milliseconds
+	 */
+	private getTimestamp(): number {
+		// Use Bun.nanoseconds() if available, otherwise performance.now()
+		try {
+			return Bun.nanoseconds() / 1_000_000;
+		} catch {
+			return performance.now();
+		}
+	}
+
+	/**
+	 * Get current metrics snapshot
+	 */
+	getMetrics(): DatabaseMetrics {
+		return { ...this.metrics };
+	}
+
+	/**
+	 * Reset metrics counters
+	 */
+	resetMetrics(): void {
+		this.metrics = {
+			queries: 0,
+			inserts: 0,
+			updates: 0,
+			deletes: 0,
+			errors: 0,
+			avgLatency: 0,
+			totalLatency: 0,
+			slowQueries: 0,
+			totalOperations: 0,
+		};
+	}
+
+	/**
+	 * Update metrics counters
+	 */
+	private updateMetrics(
+		operationType: "query" | "insert" | "update" | "delete" | "other",
+		latency: number,
+		error?: boolean,
+	): void {
+		if (!this.enableMetrics) return;
+
+		this.metrics.totalOperations++;
+		this.metrics.totalLatency += latency;
+		this.metrics.avgLatency = this.metrics.totalLatency / this.metrics.totalOperations;
+
+		if (latency > this.slowQueryThreshold) {
+			this.metrics.slowQueries++;
+		}
+
+		if (error) {
+			this.metrics.errors++;
+		}
+
+		switch (operationType) {
+			case "query":
+				this.metrics.queries++;
+				break;
+			case "insert":
+				this.metrics.inserts++;
+				break;
+			case "update":
+				this.metrics.updates++;
+				break;
+			case "delete":
+				this.metrics.deletes++;
+				break;
+		}
+	}
+
+	/**
+	 * Emit a query event to all listeners
+	 */
+	private emitEvent(event: QueryEvent): void {
+		const listeners = this.eventListeners.get(event.type);
+		if (listeners) {
+			for (const listener of listeners) {
+				try {
+					listener(event);
+				} catch (e) {
+					// Don't let listener errors affect query execution
+					console.error("Database event listener error:", e);
+				}
+			}
+		}
+	}
+
+	/**
+	 * Subscribe to query events
+	 */
+	on(eventType: QueryEventType, listener: QueryEventListener): void {
+		if (!this.eventListeners.has(eventType)) {
+			this.eventListeners.set(eventType, new Set());
+		}
+		this.eventListeners.get(eventType)?.add(listener);
+	}
+
+	/**
+	 * Unsubscribe from query events
+	 */
+	off(eventType: QueryEventType, listener: QueryEventListener): void {
+		this.eventListeners.get(eventType)?.delete(listener);
+	}
+
+	/**
+	 * Remove all event listeners
+	 */
+	removeAllListeners(eventType?: QueryEventType): void {
+		if (eventType) {
+			this.eventListeners.delete(eventType);
+		} else {
+			this.eventListeners.clear();
+		}
 	}
 
 	/**
@@ -232,12 +422,58 @@ export class Database {
 	): Promise<T[]> {
 		this.ensureConnection();
 
-		const sql = this.sql as (
-			strings: TemplateStringsArray,
-			...values: unknown[]
-		) => Promise<T[]>;
+		const sql = strings.join("?");
+		const operationType = detectOperationType(sql);
+		const startTime = this.getTimestamp();
 
-		return sql(strings, ...values);
+		// Emit query:start event
+		this.emitEvent({
+			type: "query:start",
+			sql,
+			params: values,
+			operationType,
+		});
+
+		try {
+			const sqlFn = this.sql as (
+				strings: TemplateStringsArray,
+				...values: unknown[]
+			) => Promise<T[]>;
+
+			const results = await sqlFn(strings, ...values);
+			const latency = this.getTimestamp() - startTime;
+
+			// Update metrics
+			this.updateMetrics(operationType, latency, false);
+
+			// Emit query:end event
+			this.emitEvent({
+				type: "query:end",
+				sql,
+				params: values,
+				latency,
+				operationType,
+			});
+
+			return results;
+		} catch (error) {
+			const latency = this.getTimestamp() - startTime;
+
+			// Update metrics with error
+			this.updateMetrics(operationType, latency, true);
+
+			// Emit query:error event
+			this.emitEvent({
+				type: "query:error",
+				sql,
+				params: values,
+				latency,
+				error: error instanceof Error ? error : new Error(String(error)),
+				operationType,
+			});
+
+			throw error;
+		}
 	}
 
 	/**
@@ -260,18 +496,62 @@ export class Database {
 	): Promise<QueryResult> {
 		this.ensureConnection();
 
-		const sql = this.sql as (
-			strings: TemplateStringsArray,
-			...values: unknown[]
-		) => Promise<unknown[]>;
+		const sql = strings.join("?");
+		const operationType = detectOperationType(sql);
+		const startTime = this.getTimestamp();
 
-		// For INSERT with RETURNING
-		const results = await sql(strings, ...values);
+		// Emit query:start event
+		this.emitEvent({
+			type: "query:start",
+			sql,
+			params: values,
+			operationType,
+		});
 
-		return {
-			rows: results,
-			rowCount: results.length,
-		};
+		try {
+			const sqlFn = this.sql as (
+				strings: TemplateStringsArray,
+				...values: unknown[]
+			) => Promise<unknown[]>;
+
+			// For INSERT with RETURNING
+			const results = await sqlFn(strings, ...values);
+			const latency = this.getTimestamp() - startTime;
+
+			// Update metrics
+			this.updateMetrics(operationType, latency, false);
+
+			// Emit query:end event
+			this.emitEvent({
+				type: "query:end",
+				sql,
+				params: values,
+				latency,
+				operationType,
+			});
+
+			return {
+				rows: results,
+				rowCount: results.length,
+			};
+		} catch (error) {
+			const latency = this.getTimestamp() - startTime;
+
+			// Update metrics with error
+			this.updateMetrics(operationType, latency, true);
+
+			// Emit query:error event
+			this.emitEvent({
+				type: "query:error",
+				sql,
+				params: values,
+				latency,
+				error: error instanceof Error ? error : new Error(String(error)),
+				operationType,
+			});
+
+			throw error;
+		}
 	}
 
 	/**
@@ -283,25 +563,74 @@ export class Database {
 	): Promise<T[]> {
 		this.ensureConnection();
 
-		const sql = this.sql as {
-			unsafe: (query: string, params?: unknown[]) => Promise<T[]>;
-		};
+		const operationType = detectOperationType(sqlString);
+		const startTime = this.getTimestamp();
 
-		if (sql.unsafe) {
-			// For SQLite, convert $1, $2 to ? placeholders
-			if (this.driver === "sqlite") {
-				let query = sqlString;
-				let i = 1;
-				while (query.includes(`$${i}`)) {
-					query = query.replace(`$${i}`, "?");
-					i++;
+		// Emit query:start event
+		this.emitEvent({
+			type: "query:start",
+			sql: sqlString,
+			params,
+			operationType,
+		});
+
+		try {
+			const sql = this.sql as {
+				unsafe: (query: string, params?: unknown[]) => Promise<T[]>;
+			};
+
+			let results: T[];
+
+			if (sql.unsafe) {
+				// For SQLite, convert $1, $2 to ? placeholders
+				if (this.driver === "sqlite") {
+					let query = sqlString;
+					let i = 1;
+					while (query.includes(`$${i}`)) {
+						query = query.replace(`$${i}`, "?");
+						i++;
+					}
+					results = await sql.unsafe(query, params);
+				} else {
+					results = await sql.unsafe(sqlString, params);
 				}
-				return sql.unsafe(query, params);
+			} else {
+				throw new Error("Raw SQL not supported");
 			}
-			return sql.unsafe(sqlString, params);
-		}
 
-		throw new Error("Raw SQL not supported");
+			const latency = this.getTimestamp() - startTime;
+
+			// Update metrics
+			this.updateMetrics(operationType, latency, false);
+
+			// Emit query:end event
+			this.emitEvent({
+				type: "query:end",
+				sql: sqlString,
+				params,
+				latency,
+				operationType,
+			});
+
+			return results;
+		} catch (error) {
+			const latency = this.getTimestamp() - startTime;
+
+			// Update metrics with error
+			this.updateMetrics(operationType, latency, true);
+
+			// Emit query:error event
+			this.emitEvent({
+				type: "query:error",
+				sql: sqlString,
+				params,
+				latency,
+				error: error instanceof Error ? error : new Error(String(error)),
+				operationType,
+			});
+
+			throw error;
+		}
 	}
 
 	/**

@@ -12,6 +12,20 @@ export interface CacheConfig {
 	url?: string;
 	ttl?: number; // Default TTL in seconds
 	keyPrefix?: string;
+	enableMetrics?: boolean; // Enable metrics collection (default: true)
+}
+
+/**
+ * Cache metrics for observability
+ */
+export interface CacheMetrics {
+	hits: number;
+	misses: number;
+	sets: number;
+	deletes: number;
+	errors: number;
+	avgLatency: number; // in milliseconds
+	totalOperations: number;
 }
 
 export interface SessionData {
@@ -306,16 +320,104 @@ export class Cache {
 	private defaultTTL: number;
 	private _isConnected = false;
 	private driverType: "redis" | "memory";
+	private enableMetrics: boolean;
+
+	// Metrics tracking
+	private metrics: CacheMetrics = {
+		hits: 0,
+		misses: 0,
+		sets: 0,
+		deletes: 0,
+		errors: 0,
+		avgLatency: 0,
+		totalOperations: 0,
+	};
+	private totalLatency = 0; // For calculating average
 
 	constructor(config: CacheConfig = {}) {
 		this.driverType = config.driver ?? "memory";
 		this.keyPrefix = config.keyPrefix ?? "bueno:";
 		this.defaultTTL = config.ttl ?? 3600;
+		this.enableMetrics = config.enableMetrics ?? true;
 
 		if (this.driverType === "redis" && config.url) {
 			this.driver = new RedisCache(config.url);
 		} else {
 			this.driver = new MemoryCache();
+		}
+	}
+
+	/**
+	 * Get current metrics snapshot
+	 */
+	getMetrics(): CacheMetrics {
+		return { ...this.metrics };
+	}
+
+	/**
+	 * Reset metrics counters
+	 */
+	resetMetrics(): void {
+		this.metrics = {
+			hits: 0,
+			misses: 0,
+			sets: 0,
+			deletes: 0,
+			errors: 0,
+			avgLatency: 0,
+			totalOperations: 0,
+		};
+		this.totalLatency = 0;
+	}
+
+	/**
+	 * Update metrics counters
+	 */
+	private updateMetrics(
+		operation: "get" | "set" | "delete",
+		hit?: boolean,
+		latency?: number,
+		error?: boolean,
+	): void {
+		if (!this.enableMetrics) return;
+
+		this.metrics.totalOperations++;
+
+		if (latency !== undefined) {
+			this.totalLatency += latency;
+			this.metrics.avgLatency = this.totalLatency / this.metrics.totalOperations;
+		}
+
+		if (error) {
+			this.metrics.errors++;
+		}
+
+		switch (operation) {
+			case "get":
+				if (hit === true) {
+					this.metrics.hits++;
+				} else if (hit === false) {
+					this.metrics.misses++;
+				}
+				break;
+			case "set":
+				this.metrics.sets++;
+				break;
+			case "delete":
+				this.metrics.deletes++;
+				break;
+		}
+	}
+
+	/**
+	 * Get current timestamp in milliseconds
+	 */
+	private getTimestamp(): number {
+		// Use Bun.nanoseconds() if available, otherwise performance.now()
+		try {
+			return Bun.nanoseconds() / 1_000_000;
+		} catch {
+			return performance.now();
 		}
 	}
 
@@ -365,16 +467,31 @@ export class Cache {
 	 * Get a value
 	 */
 	async get<T = unknown>(key: string): Promise<T | null> {
+		const startTime = this.getTimestamp();
 		const fullKey = this.keyPrefix + key;
-		const value = await this.driver.get(fullKey);
 
-		if (value === null || value === undefined) return null;
-
-		// Try to parse JSON
 		try {
-			return JSON.parse(value) as T;
-		} catch {
-			return value as T;
+			const value = await this.driver.get(fullKey);
+			const latency = this.getTimestamp() - startTime;
+
+			if (value === null || value === undefined) {
+				this.updateMetrics("get", false, latency, false);
+				return null;
+			}
+
+			// Try to parse JSON
+			try {
+				const parsed = JSON.parse(value) as T;
+				this.updateMetrics("get", true, latency, false);
+				return parsed;
+			} catch {
+				this.updateMetrics("get", true, latency, false);
+				return value as T;
+			}
+		} catch (error) {
+			const latency = this.getTimestamp() - startTime;
+			this.updateMetrics("get", false, latency, true);
+			throw error;
 		}
 	}
 
@@ -382,18 +499,39 @@ export class Cache {
 	 * Set a value
 	 */
 	async set<T>(key: string, value: T, ttl?: number): Promise<void> {
+		const startTime = this.getTimestamp();
 		const fullKey = this.keyPrefix + key;
 		const serialized =
 			typeof value === "string" ? value : JSON.stringify(value);
-		await this.driver.set(fullKey, serialized, ttl ?? this.defaultTTL);
+
+		try {
+			await this.driver.set(fullKey, serialized, ttl ?? this.defaultTTL);
+			const latency = this.getTimestamp() - startTime;
+			this.updateMetrics("set", undefined, latency, false);
+		} catch (error) {
+			const latency = this.getTimestamp() - startTime;
+			this.updateMetrics("set", undefined, latency, true);
+			throw error;
+		}
 	}
 
 	/**
 	 * Delete a value
 	 */
 	async delete(key: string): Promise<boolean> {
+		const startTime = this.getTimestamp();
 		const fullKey = this.keyPrefix + key;
-		return this.driver.delete(fullKey);
+
+		try {
+			const result = await this.driver.delete(fullKey);
+			const latency = this.getTimestamp() - startTime;
+			this.updateMetrics("delete", undefined, latency, false);
+			return result;
+		} catch (error) {
+			const latency = this.getTimestamp() - startTime;
+			this.updateMetrics("delete", undefined, latency, true);
+			throw error;
+		}
 	}
 
 	/**
