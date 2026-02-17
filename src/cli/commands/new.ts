@@ -5,7 +5,7 @@
  */
 
 import { defineCommand } from './index';
-import { getOption, hasFlag, type ParsedArgs } from '../core/args';
+import { getOption, hasFlag, getOptionValues, type ParsedArgs } from '../core/args';
 import { cliConsole, colors, printTable } from '../core/console';
 import { prompt, confirm, select, isInteractive } from '../core/prompt';
 import { spinner, runTasks, type TaskOptions } from '../core/spinner';
@@ -18,6 +18,18 @@ import {
 } from '../utils/fs';
 import { kebabCase } from '../utils/strings';
 import { CLIError, CLIErrorType } from '../index';
+import {
+	getDockerfileTemplate,
+	getDockerignoreTemplate,
+	getDockerComposeTemplate,
+	getDockerEnvTemplate,
+} from '../templates/docker';
+import {
+	type DeployPlatform,
+	getDeployTemplate,
+	getDeployFilename,
+	getDeployPlatformName,
+} from '../templates/deploy';
 
 /**
  * Project templates
@@ -44,6 +56,8 @@ interface ProjectConfig {
 	database: DatabaseDriver;
 	skipInstall: boolean;
 	skipGit: boolean;
+	docker: boolean;
+	deploy: DeployPlatform[];
 }
 
 /**
@@ -428,6 +442,63 @@ async function createProjectFiles(
 		},
 	});
 
+	// Create Docker files if enabled
+	if (config.docker) {
+		tasks.push({
+			text: 'Creating Dockerfile',
+			task: async () => {
+				await writeFile(
+					joinPaths(projectPath, 'Dockerfile'),
+					getDockerfileTemplate(config.name, config.database),
+				);
+			},
+		});
+
+		tasks.push({
+			text: 'Creating .dockerignore',
+			task: async () => {
+				await writeFile(
+					joinPaths(projectPath, '.dockerignore'),
+					getDockerignoreTemplate(),
+				);
+			},
+		});
+
+		tasks.push({
+			text: 'Creating docker-compose.yml',
+			task: async () => {
+				await writeFile(
+					joinPaths(projectPath, 'docker-compose.yml'),
+					getDockerComposeTemplate(config.name, config.database),
+				);
+			},
+		});
+
+		tasks.push({
+			text: 'Creating .env.docker',
+			task: async () => {
+				await writeFile(
+					joinPaths(projectPath, '.env.docker'),
+					getDockerEnvTemplate(config.name, config.database),
+				);
+			},
+		});
+	}
+
+	// Create deployment configuration files
+	for (const platform of config.deploy) {
+		const filename = getDeployFilename(platform);
+		tasks.push({
+			text: `Creating ${filename} for ${getDeployPlatformName(platform)}`,
+			task: async () => {
+				await writeFile(
+					joinPaths(projectPath, filename),
+					getDeployTemplate(platform, config.name, config.database),
+				);
+			},
+		});
+	}
+
 	await runTasks(tasks);
 }
 
@@ -482,6 +553,25 @@ async function handleNew(args: ParsedArgs): Promise<void> {
 
 	const skipInstall = hasFlag(args, 'skip-install');
 	const skipGit = hasFlag(args, 'skip-git');
+	const docker = hasFlag(args, 'docker');
+	
+	// Get deployment platforms (can be specified multiple times)
+	const deployPlatforms = getOptionValues(args, 'deploy');
+	const validPlatforms: DeployPlatform[] = ['render', 'fly', 'railway'];
+	const deploy: DeployPlatform[] = [];
+	
+	for (const platform of deployPlatforms) {
+		if (validPlatforms.includes(platform as DeployPlatform)) {
+			if (!deploy.includes(platform as DeployPlatform)) {
+				deploy.push(platform as DeployPlatform);
+			}
+		} else {
+			throw new CLIError(
+				`Invalid deployment platform: ${platform}. Valid options are: ${validPlatforms.join(', ')}`,
+				CLIErrorType.INVALID_ARGS,
+			);
+		}
+	}
 
 	// Interactive prompts for missing options
 	if (!useDefaults && isInteractive()) {
@@ -536,6 +626,8 @@ async function handleNew(args: ParsedArgs): Promise<void> {
 		database,
 		skipInstall,
 		skipGit,
+		docker,
+		deploy,
 	};
 
 	// Check if directory exists
@@ -554,6 +646,8 @@ async function handleNew(args: ParsedArgs): Promise<void> {
 		['Template', template],
 		['Framework', framework],
 		['Database', database],
+		['Docker', docker ? colors.green('Yes') : colors.red('No')],
+		['Deploy', deploy.length > 0 ? colors.green(deploy.map(getDeployPlatformName).join(', ')) : colors.red('None')],
 		['Install dependencies', skipInstall ? colors.red('No') : colors.green('Yes')],
 		['Initialize git', skipGit ? colors.red('No') : colors.green('Yes')],
 	];
@@ -673,6 +767,17 @@ defineCommand(
 				description: 'Skip git initialization',
 			},
 			{
+				name: 'docker',
+				type: 'boolean',
+				default: false,
+				description: 'Include Docker configuration (Dockerfile, docker-compose.yml)',
+			},
+			{
+				name: 'deploy',
+				type: 'string',
+				description: 'Deployment platform configuration (render, fly, railway). Can be specified multiple times.',
+			},
+			{
 				name: 'yes',
 				alias: 'y',
 				type: 'boolean',
@@ -685,6 +790,13 @@ defineCommand(
 			'bueno new my-api --template api',
 			'bueno new my-fullstack --template fullstack --framework react',
 			'bueno new my-project --database postgresql',
+			'bueno new my-app --docker',
+			'bueno new my-app --docker --database postgresql',
+			'bueno new my-app --deploy render',
+			'bueno new my-app --deploy fly',
+			'bueno new my-app --deploy render --deploy fly',
+			'bueno new my-app --docker --deploy render',
+			'bueno new my-app --docker --database postgresql --deploy render',
 			'bueno new my-app -y',
 		],
 	},

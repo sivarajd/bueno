@@ -148,6 +148,42 @@ export function hasOption(parsed: ParsedArgs, name: string, alias?: string): boo
 }
 
 /**
+ * Get all values for an option that can be specified multiple times
+ * Parses raw argv to collect all occurrences of the option
+ */
+export function getOptionValues(parsed: ParsedArgs, name: string, alias?: string): string[] {
+	const values: string[] = [];
+	const argv = process.argv.slice(2);
+	
+	for (let i = 0; i < argv.length; i++) {
+		const arg = argv[i];
+		if (!arg) continue;
+		
+		// Long option: --name value or --name=value
+		if (arg === `--${name}`) {
+			const nextArg = argv[i + 1];
+			if (nextArg && !nextArg.startsWith('-')) {
+				values.push(nextArg);
+				i++; // Skip next arg
+			}
+		} else if (arg.startsWith(`--${name}=`)) {
+			const value = arg.slice(name.length + 3); // --name=
+			values.push(value);
+		}
+		// Short option: -n value
+		else if (alias && arg === `-${alias}`) {
+			const nextArg = argv[i + 1];
+			if (nextArg && !nextArg.startsWith('-')) {
+				values.push(nextArg);
+				i++; // Skip next arg
+			}
+		}
+	}
+	
+	return values;
+}
+
+/**
  * Generate help text from command definition
  */
 export function generateHelpText(

@@ -1,6 +1,6 @@
 {
   "name": "bueno",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "A Bun-Native Full-Stack Framework",
   "type": "module",
   "main": "./dist/index.js",
@@ -24,7 +24,7 @@
     "test": "bun test",
     "test:watch": "bun test --watch",
     "test:coverage": "bun test --coverage",
-    "build": "bun build ./src/index.ts ./src/cli/bin.ts --outdir ./dist --target bun && mv ./dist/bin.js ./dist/cli/index.js",
+    "build": "bun build ./src/index.ts ./src/cli/bin.ts --outdir ./dist --target bun && mv ./dist/cli/bin.js ./dist/cli/index.js",
     "build:cli": "bun build ./src/cli/bin.ts --outdir ./dist/cli --target bun && mv ./dist/cli/bin.js ./dist/cli/index.js",
     "typecheck": "tsc --noEmit",
     "lint": "bunx biome check ./src",

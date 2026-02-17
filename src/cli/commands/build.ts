@@ -25,6 +25,11 @@ import { CLIError, CLIErrorType } from '../index';
 type BuildTarget = 'bun' | 'node' | 'standalone';
 
 /**
+ * Cross-compile targets
+ */
+type CrossCompileTarget = 'linux-x64' | 'linux-arm64' | 'windows-x64' | 'darwin-x64' | 'darwin-arm64';
+
+/**
  * Find the entry point for the application
  */
 async function findEntryPoint(projectRoot: string): Promise<string | null> {
@@ -79,6 +84,45 @@ async function handleBuild(args: ParsedArgs): Promise<void> {
 		description: '',
 	});
 
+	// Compile options
+	const compile = hasFlag(args, 'compile');
+	const crossCompile = getOption(args, 'cross-compile', {
+		name: 'cross-compile',
+		type: 'string',
+		description: '',
+	}) as CrossCompileTarget | undefined;
+	const executableName = getOption<string>(args, 'executable-name', {
+		name: 'executable-name',
+		type: 'string',
+		default: 'main',
+		description: '',
+	});
+
+	// Validate cross-compile target
+	if (crossCompile) {
+		const validCrossCompileTargets: CrossCompileTarget[] = [
+			'linux-x64',
+			'linux-arm64',
+			'windows-x64',
+			'darwin-x64',
+			'darwin-arm64',
+		];
+		if (!validCrossCompileTargets.includes(crossCompile)) {
+			throw new CLIError(
+				`Invalid cross-compile target: ${crossCompile}. Valid targets: ${validCrossCompileTargets.join(', ')}`,
+				CLIErrorType.INVALID_ARGS,
+			);
+		}
+	}
+
+	// Validate that cross-compile requires compile
+	if (crossCompile && !compile) {
+		throw new CLIError(
+			'--cross-compile requires --compile flag',
+			CLIErrorType.INVALID_ARGS,
+		);
+	}
+
 	// Validate target
 	const validTargets: BuildTarget[] = ['bun', 'node', 'standalone'];
 	if (!validTargets.includes(target)) {
@@ -114,9 +158,20 @@ async function handleBuild(args: ParsedArgs): Promise<void> {
 	}
 
 	// Display build info
-	cliConsole.header('Building for Production');
+	if (compile) {
+		cliConsole.header('Compiling Single-File Executable');
+	} else {
+		cliConsole.header('Building for Production');
+	}
 	cliConsole.log(`${colors.bold('Entry:')} ${entryPoint}`);
 	cliConsole.log(`${colors.bold('Target:')} ${target}`);
+	if (compile) {
+		cliConsole.log(`${colors.bold('Compile:')} ${colors.green('enabled')}`);
+		if (crossCompile) {
+			cliConsole.log(`${colors.bold('Cross-compile:')} ${colors.cyan(crossCompile)}`);
+		}
+		cliConsole.log(`${colors.bold('Executable:')} ${executableName}`);
+	}
 	cliConsole.log(`${colors.bold('Output:')} ${outDir}`);
 	cliConsole.log(`${colors.bold('Minify:')} ${minify ? colors.green('enabled') : colors.red('disabled')}`);
 	cliConsole.log(`${colors.bold('Sourcemap:')} ${sourcemap ? colors.green('enabled') : colors.red('disabled')}`);
@@ -132,7 +187,93 @@ async function handleBuild(args: ParsedArgs): Promise<void> {
 			await deleteDirectory(fullOutDir);
 		}
 
-		// Build using Bun
+		// Handle compile build
+		if (compile) {
+			// Determine the executable filename
+			const isWindows = crossCompile === 'windows-x64';
+			const executableFileName = isWindows
+				? `${executableName}.exe`
+				: executableName;
+			const executablePath = joinPaths(fullOutDir, executableFileName);
+
+			// Build compile options
+			const buildOptions: any = {
+				entrypoints: [joinPaths(projectRoot, entryPoint)],
+				outdir: fullOutDir,
+				target: crossCompile || 'bun',
+				minify,
+				sourcemap: sourcemap ? 'external' : undefined,
+				naming: executableFileName,
+				compile: true,
+				define: {
+					'process.env.NODE_ENV': '"production"',
+				},
+			};
+
+			// Build using Bun with compile
+			const buildResult = await Bun.build(buildOptions);
+
+			if (!buildResult.success) {
+				s.error();
+				for (const error of buildResult.logs) {
+					cliConsole.error(error.message);
+				}
+				throw new CLIError(
+					'Compile failed',
+					CLIErrorType.TEMPLATE_ERROR,
+				);
+			}
+
+			const elapsed = Date.now() - startTime;
+			s.success(`Compile completed in ${formatDuration(elapsed)}`);
+
+			// Show output info
+			cliConsole.log('');
+			cliConsole.log(`${colors.bold('Output Executable:')}`);
+			
+			// Get executable file size
+			const fs = require('fs');
+			let executableSize = 0;
+			try {
+				const stat = fs.statSync(executablePath);
+				executableSize = stat.size;
+			} catch (e) {
+				// If we can't stat the file, try to get size from build result
+				if (buildResult.outputs.length > 0) {
+					executableSize = buildResult.outputs[0].size;
+				}
+			}
+			
+			cliConsole.log(`  ${colors.cyan(executablePath.replace(projectRoot, '.'))} ${colors.dim(`(${formatSize(executableSize)})`)}`);
+			cliConsole.log('');
+			
+			// Show success message with run instructions
+			cliConsole.success('Single-file executable created successfully!');
+			if (crossCompile) {
+				cliConsole.log(`${colors.bold('Target Platform:')} ${crossCompile}`);
+			}
+			cliConsole.log('');
+			cliConsole.info('You can run the executable directly:');
+			if (isWindows) {
+				cliConsole.log(colors.cyan(`  .${outDir}/${executableFileName}`));
+			} else {
+				cliConsole.log(colors.cyan(`  .${outDir}/${executableFileName}`));
+			}
+
+			// Analyze if requested
+			if (analyze) {
+				cliConsole.log('');
+				cliConsole.header('Bundle Analysis');
+				cliConsole.log('Output:');
+				for (const entry of buildResult.outputs) {
+					cliConsole.log(`  ${entry.path} (${formatSize(entry.size)})`);
+				}
+			}
+
+			return;
+		}
+
+		// Build using Bun (non-compile)
 		const buildResult = await Bun.build({
 			entrypoints: [joinPaths(projectRoot, entryPoint)],
 			outdir: fullOutDir,
@@ -196,8 +337,8 @@ async function handleBuild(args: ParsedArgs): Promise<void> {
 		// Show standalone build info
 		if (target === 'standalone') {
 			cliConsole.log('');
-			cliConsole.info('Standalone executable created. You can run it directly:');
-			cliConsole.log(colors.cyan(`  .${outDir}/${entryPoint.replace('.ts', '')}`));
+			cliConsole.info('Standalone bundle created. You can run it with:');
+			cliConsole.log(colors.cyan(`  bun .${outDir}/${entryPoint.replace('.ts', '.js')}`));
 		}
 
 	} catch (error) {
@@ -250,6 +391,23 @@ defineCommand(
 				type: 'string',
 				description: 'Path to config file',
 			},
+			{
+				name: 'compile',
+				type: 'boolean',
+				default: false,
+				description: 'Create a single-file executable using Bun compile',
+			},
+			{
+				name: 'cross-compile',
+				type: 'string',
+				description: 'Cross-compile for different platforms (linux-x64, linux-arm64, windows-x64, darwin-x64, darwin-arm64)',
+			},
+			{
+				name: 'executable-name',
+				type: 'string',
+				default: 'main',
+				description: 'Custom name for the output executable (default: main)',
+			},
 		],
 		examples: [
 			'bueno build',
@@ -257,6 +415,10 @@ defineCommand(
 			'bueno build --target standalone',
 			'bueno build --sourcemap',
 			'bueno build --analyze',
+			'bueno build --compile',
+			'bueno build --compile --outdir ./bin',
+			'bueno build --compile --cross-compile linux-x64',
+			'bueno build --compile --executable-name myapp',
 		],
 	},
 	handleBuild,
