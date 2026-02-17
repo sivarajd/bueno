@@ -321,25 +321,6 @@ src/cli/
 │   ├── middleware.ts        # Middleware generator
 │   └── migration.ts         # Migration generator
 │
-├── templates/               # File templates
-│   ├── project/             # Project templates
-│   │   ├── default/         # Default project template
-│   │   ├── minimal/         # Minimal project template
-│   │   ├── fullstack/       # Fullstack project template
-│   │   └── api/             # API-only project template
-│   │
-│   └── files/               # Code file templates
-│       ├── controller.ts.tpl
-│       ├── service.ts.tpl
-│       ├── module.ts.tpl
-│       ├── guard.ts.tpl
-│       ├── interceptor.ts.tpl
-│       ├── pipe.ts.tpl
-│       ├── filter.ts.tpl
-│       ├── dto.ts.tpl
-│       ├── middleware.ts.tpl
-│       └── migration.ts.tpl
-│
 └── utils/                   # Utility functions
     ├── fs.ts                # File system utilities
     ├── strings.ts           # String manipulation
@@ -398,66 +379,71 @@ my-app/
 
 ## 4. Template System
 
-### 4.1 Template Engine
+### 4.1 Dynamic Template Generation
 
-The CLI uses a simple, Bun-native template system with the following features:
+The CLI uses a dynamic template generation approach via TypeScript functions in [`commands/new.ts`](src/cli/commands/new.ts). Instead of static template files, templates are generated programmatically at runtime, providing several advantages:
 
-- **Variable Interpolation**: `{{variable}}` syntax
-- **Conditional Blocks**: `{{#if condition}}...{{/if}}`
-- **Iterative Blocks**: `{{#each items}}...{{/each}}`
-- **Helpers**: `{{camelCase name}}`, `{{pascalCase name}}`, etc.
+- **No external files to maintain**: All templates are self-contained in the codebase
+- **Type-safe**: Templates benefit from TypeScript type checking
+- **Easier version control**: Templates are part of the source code, not separate files
+- **Dynamic customization**: Templates can adapt based on project configuration
+- **Simpler debugging**: Template code is regular TypeScript with full IDE support
 
-### 4.2 Template File Format
+### 4.2 Template Functions
 
-Templates use `.tpl` extension and contain TypeScript with template markers:
+The following functions in [`commands/new.ts`](src/cli/commands/new.ts) generate project files:
 
-**Example: `controller.ts.tpl`**
+| Function | File Generated | Purpose |
+|----------|---------------|---------|
+| [`getPackageJsonTemplate()`](src/cli/commands/new.ts:75) | `package.json` | Generates npm package configuration with dependencies based on template type |
+| [`getTsConfigTemplate()`](src/cli/commands/new.ts:117) | `tsconfig.json` | Generates TypeScript configuration |
+| [`getMainTemplate()`](src/cli/commands/new.ts:144) | `server/main.ts` | Generates application entry point with controller/service/module based on template |
+| [`getConfigTemplate()`](src/cli/commands/new.ts:201) | `bueno.config.ts` | Generates framework configuration with database settings |
+| [`getEnvExampleTemplate()`](src/cli/commands/new.ts:233) | `.env.example` | Generates environment variable template |
+| [`getGitignoreTemplate()`](src/cli/commands/new.ts:249) | `.gitignore` | Generates git ignore patterns |
+| [`getReadmeTemplate()`](src/cli/commands/new.ts:288) | `README.md` | Generates project documentation |
+
+### 4.3 Template Types
+
+The CLI supports four project templates, selected via `--template` or `-t` option:
+
+| Template | Description | Features |
+|----------|-------------|----------|
+| `default` | Standard project with modules, database, and basic frontend | Controllers, Services, Modules, Database config, Zod |
+| `minimal` | Bare minimum project structure | Simple server with router, no decorators |
+| `fullstack` | Full-stack project with SSR and frontend | Full framework features with frontend integration |
+| `api` | API-only project without frontend | Controllers, Services, Database, no frontend |
+
+### 4.4 Template Customization
+
+Templates adapt based on the project configuration:
+
+- **Database selection**: Template functions check `config.database` to include appropriate connection strings
+- **Template type**: Different code is generated for `minimal` vs full framework projects
+- **Project name**: All templates use the project name for package.json, README, etc.
+
+Example from [`getMainTemplate()`](src/cli/commands/new.ts:144):
 ```typescript
-import { Controller{{#if path}}, Get{{/if}} } from 'bueno';
-import type { Context } from 'bueno';
-{{#if service}}
-import { {{pascalCase service}}Service } from './{{kebabCase service}}.service';
-{{/if}}
-
-@Controller('{{path}}')
-export class {{pascalCase name}}Controller {
-  {{#if service}}
-  constructor(private readonly {{camelCase service}}Service: {{pascalCase service}}Service) {}
-  {{/if}}
-
-  @Get()
-  async findAll(ctx: Context) {
-    return { message: '{{pascalCase name}} controller' };
+function getMainTemplate(config: ProjectConfig): string {
+  if (config.template === 'minimal') {
+    // Simple router-based approach
+    return `import { createServer } from 'bueno';
+const app = createServer();
+app.router.get('/', () => {
+  return { message: 'Hello, Bueno!' };
+});
+await app.listen(3000);`;
   }
+  // Full framework approach with decorators
+  return `import { createApp, Module, Controller, Get, Injectable } from 'bueno';
+// ... full module structure with @Controller, @Injectable, etc.
+await createApp(AppModule).listen(3000);`;
 }
 ```
 
-### 4.3 Template Helpers
+### 4.5 Future: Static Template Support
 
-Built-in template helpers:
-
-| Helper | Example Input | Output |
-|--------|---------------|--------|
-| `camelCase` | `user-profile` | `userProfile` |
-| `pascalCase` | `user-profile` | `UserProfile` |
-| `kebabCase` | `UserProfile` | `user-profile` |
-| `snakeCase` | `UserProfile` | `user_profile` |
-| `upperCase` | `user` | `USER` |
-| `lowerCase` | `USER` | `user` |
-| `pluralize` | `user` | `users` |
-| `singularize` | `users` | `user` |
-
-### 4.4 Custom Templates
-
-Users can override built-in templates by creating a `.bueno/templates/` directory in their project root:
-
-```
-.bueno/
-└── templates/
-    ├── controller.ts.tpl
-    ├── service.ts.tpl
-    └── module.ts.tpl
-```
+The architecture allows for future expansion to support static template files if needed. The current dynamic approach can coexist with file-based templates for custom user templates.
 
 ---
 
@@ -589,14 +575,16 @@ const logger = createLogger({
 
 ### 6.2 Phase 2: Scaffolding
 
-1. **Project Templates** (`templates/project/`)
-   - Create template directories for each project type
-   - Template variables for customization
-   - Post-generation hooks (npm install, git init)
+1. **Dynamic Template Functions** (`commands/new.ts`)
+   - Template functions generate project files programmatically
+   - Supports 4 template types: default, minimal, fullstack, api
+   - Templates adapt based on project configuration (database, framework)
+   - Post-generation hooks (bun install, git init)
 
 2. **New Command** (`commands/new.ts`)
-   - Interactive project creation
+   - Interactive project creation with prompts
    - Template selection and customization
+   - Project validation and directory creation
    - Dependency installation using `bun install`
 
 ### 6.3 Phase 3: Code Generation
