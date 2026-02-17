@@ -10,11 +10,11 @@ export const VERSION = "0.1.0";
 // Core
 export {
 	Container,
-	Token,
+	createToken,
 	Injectable,
 	Inject,
-	type Provider,
 } from "./container";
+export type { Provider, Token } from "./container";
 export { Router, generateUrl } from "./router";
 export { Context, createContext } from "./context";
 export {
@@ -257,7 +257,6 @@ export type {
 	RouteHandler,
 	MiddlewareHandler,
 	RouteDefinition,
-	Token as TokenType,
 	ModuleMetadata,
 	ContextVariableMap,
 	StandardSchema,

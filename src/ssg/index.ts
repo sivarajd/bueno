@@ -180,9 +180,9 @@ function parseMarkdown(markdown: string): string {
 
 		if (ulMatch || olMatch) {
 			const match = ulMatch || olMatch;
-			const indent = match?.[1].length;
+			const indent = match?.[1].length ?? 0;
 			const type = ulMatch ? "ul" : "ol";
-			const text = ulMatch ? ulMatch[2] : olMatch?.[3];
+			const text = ulMatch ? ulMatch[2] : (olMatch?.[3] ?? "");
 
 			if (
 				currentList &&
@@ -197,7 +197,7 @@ function parseMarkdown(markdown: string): string {
 						`<${tag}><li>${currentList.items.join("</li><li>")}</li></${tag}>`,
 					);
 				}
-				currentList = { indent, type, items: [text] };
+				currentList = { indent: indent ?? 0, type, items: [text] };
 			}
 		} else {
 			if (currentList) {
@@ -403,7 +403,7 @@ export class SSG {
 				content: page.html,
 				page,
 				site: this.siteConfig,
-			});
+			}) ?? "";
 		}
 
 		return layout({

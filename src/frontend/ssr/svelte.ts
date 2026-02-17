@@ -31,11 +31,11 @@ interface SvelteRenderResult {
 
 interface SvelteComponentConstructor {
 	new (options: {
-		target: Element | null;
+		target: object | null;
 		props?: Record<string, unknown>;
 		hydrate?: boolean;
 		intro?: boolean;
-		$$inline?: boolean;
+		$inline?: boolean;
 	}): SvelteComponent;
 
 	render(props?: Record<string, unknown>): SvelteRenderResult;

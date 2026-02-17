@@ -39,7 +39,19 @@ export const Password = {
 	 */
 	needsRehash(hash: string, options?: PasswordOptions): boolean {
 		const algorithm = options?.algorithm ?? "argon2id";
-		return !Bun.password.needsRehash?.(hash, { algorithm }) ?? false;
+		// Check if needsRehash exists on Bun.password (it may not in all versions)
+		if (typeof (Bun.password as unknown as Record<string, unknown>).needsRehash === 'function') {
+			const needsRehashFn = (Bun.password as unknown as Record<string, unknown>).needsRehash as (hash: string, options: { algorithm: string }) => boolean;
+			return !needsRehashFn(hash, { algorithm });
+		}
+		// Fallback: check if hash starts with the expected algorithm prefix
+		if (algorithm === 'argon2id' && !hash.startsWith('$argon2id')) {
+			return true;
+		}
+		if (algorithm === 'bcrypt' && !hash.startsWith('$2')) {
+			return true;
+		}
+		return false;
 	},
 };
 
@@ -375,7 +387,7 @@ export function createRBACMiddleware(
 
 	return (allowedRoles: string[]): Middleware => {
 		return async (context: Context, next: () => Promise<Response>) => {
-			const user = context.get<{ userId?: string | number }>("user");
+			const user = context.get("user") as { userId?: string | number } | undefined;
 
 			if (!user?.userId) {
 				return context.status(401).json({ error: "Unauthorized" });

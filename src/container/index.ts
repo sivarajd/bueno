@@ -17,16 +17,24 @@ import {
 export type { Provider } from "../types";
 export { type ForwardRef, forwardRef, isForwardRef, resolveForwardRef };
 
-// ============= Token =============
+// ============= Token Factory =============
 
 /**
- * Creates a typed injection token
+ * Token type - represents an injection token
  */
-export function Token<T>(description: string): Token<T> {
+export type Token<T = unknown> = symbol & { readonly __type?: T };
+
+/**
+ * Creates a typed injection token (symbol-based)
+ */
+export function createToken<T>(description: string): Token<T> {
 	return Symbol(description) as Token<T>;
 }
 
-export type Token<T = unknown> = symbol & { readonly __type?: T };
+/**
+ * Token function - creates a typed injection token (symbol-based)
+ */
+export const Token = createToken;
 
 // ============= Provider Resolution =============
 
@@ -101,13 +109,13 @@ export class Container {
 	 * Register a single provider
 	 */
 	register<T>(provider: Provider<T>): void {
-		if (this.providers.has(provider.token)) {
+		if (this.providers.has(provider.token as Token)) {
 			throw new Error(
 				`Provider already registered for token: ${String(provider.token)}`,
 			);
 		}
 
-		this.providers.set(provider.token, {
+		this.providers.set(provider.token as Token, {
 			provider: {
 				...provider,
 				scope: provider.scope ?? "singleton",
@@ -157,14 +165,14 @@ export class Container {
 		this.resolutionStack.push(token as Token);
 
 		try {
-			const instance = this.createInstance<T>(provider);
+			const instance = this.createInstance(provider);
 
 			// Cache singleton instances
 			if (provider.scope === "singleton") {
 				resolved.instance = instance;
 			}
 
-			return instance;
+			return instance as T;
 		} finally {
 			this.resolutionStack.pop(token as Token);
 		}
@@ -188,7 +196,8 @@ export class Container {
 		this.resolutionStack.markLazy(token, placeholder);
 
 		// Create a proxy that lazily resolves the dependency
-		const proxy = new Proxy({} as T, {
+		// eslint-disable-next-line @typescript-eslint/no-explicit-any
+		const proxy = new Proxy({} as any, {
 			get: (target: T, prop: string | symbol): unknown => {
 				// If already resolved, return the cached value
 				if (placeholder.resolved && placeholder.instance) {
@@ -260,7 +269,8 @@ export class Container {
 		// useClass: instantiate with injected dependencies
 		if (provider.useClass) {
 			const deps = this.resolveDeps(provider.inject ?? []);
-			return new provider.useClass(...deps) as T;
+			// Use new with proper typing for abstract class constructor
+			return new (provider.useClass as new (...args: unknown[]) => T)(...deps);
 		}
 
 		throw new Error(
@@ -271,7 +281,8 @@ export class Container {
 	/**
 	 * Resolve an array of dependency tokens (including ForwardRef support)
 	 */
-	private resolveDeps(tokens: Array<Token | ForwardRef<Token>>): unknown[] {
+	// eslint-disable-next-line @typescript-eslint/no-explicit-any
+	private resolveDeps(tokens: any[]): unknown[] {
 		return tokens.map((tokenOrRef) => {
 			// Resolve forward reference if needed
 			const token = resolveForwardRef(tokenOrRef);
@@ -332,10 +343,10 @@ function getContainerMetadata<T>(target: object, key: string): T | undefined {
  * Helper to create injectable class decorator
  */
 export function Injectable(token?: Token): ClassDecorator {
-	return (target: abstract new (...args: unknown[]) => unknown) => {
-		setContainerMetadata(target, "injectable", true);
+	return <TFunction extends Function>(target: TFunction): TFunction => {
+		setContainerMetadata(target as object, "injectable", true);
 		if (token) {
-			setContainerMetadata(target, "token", token);
+			setContainerMetadata(target as object, "token", token);
 		}
 		return target;
 	};

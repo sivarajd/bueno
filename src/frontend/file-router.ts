@@ -235,7 +235,7 @@ export class FileRouter {
 
 		for (const route of sortedRoutes) {
 			if (route.type === "page") {
-				this.router.get(route.path, this.createPageHandler(route));
+				this.router.get(route.path, this.createPageHandler(route) as import("../types").RouteHandler);
 			} else if (route.type === "api") {
 				this.registerApiRoute(route);
 			}
@@ -298,11 +298,20 @@ export class FileRouter {
 		if (!module) return;
 
 		const handlers: Record<string, RouteHandler> = {};
+		const methodMap: Record<string, (pattern: string, handler: import("../types").RouteHandler) => void> = {
+			GET: this.router.get.bind(this.router),
+			POST: this.router.post.bind(this.router),
+			PUT: this.router.put.bind(this.router),
+			PATCH: this.router.patch.bind(this.router),
+			DELETE: this.router.delete.bind(this.router),
+			HEAD: this.router.head.bind(this.router),
+			OPTIONS: this.router.options.bind(this.router),
+		};
 
-		for (const method of ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"]) {
+		for (const method of ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"] as const) {
 			if (module[method]) {
 				handlers[method] = module[method];
-				this.router.add(method, route.path, this.createApiHandler(route, method));
+				methodMap[method](route.path, this.createApiHandler(route, method) as import("../types").RouteHandler);
 			}
 		}
 
@@ -323,7 +332,7 @@ export class FileRouter {
 			const params = this.extractParams(url.pathname, route);
 			const ctx = this.createContext(request, params);
 
-			return module[method](ctx);
+			return module[method](ctx as unknown as Request);
 		};
 	}
 
@@ -377,7 +386,7 @@ export class FileRouter {
 	/**
 	 * Create context for request
 	 */
-	private createContext(request: Request, params: Record<string, string> = {}) {
+	private createContext(request: Request, params: Record<string, string> = {}): import("./types").SSRContext {
 		const url = new URL(request.url);
 		return {
 			request,
@@ -390,7 +399,7 @@ export class FileRouter {
 			head: [],
 			body: [],
 			data: {},
-			modules: new Set(),
+			modules: new Set<string>(),
 		};
 	}
 

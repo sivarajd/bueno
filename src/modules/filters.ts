@@ -165,10 +165,10 @@ export function UseFilters(...filters: Filter[]): MethodDecorator & ClassDecorat
  * ```
  */
 export function Catch<T extends Error>(
-	exceptionType: new (...args: unknown[]) => T,
+	exceptionType: new (...args: never[]) => T,
 ): ClassDecorator {
 	const decorator = (target: Constructor): void => {
-		catchMetadataStore.set(target, { exceptionType });
+		catchMetadataStore.set(target, { exceptionType: exceptionType as unknown as new (...args: unknown[]) => Error });
 	};
 	return decorator as ClassDecorator;
 }

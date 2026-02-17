@@ -56,8 +56,10 @@ export function addHeadElement(element: SSRElement): void {
  * Solid SSR Renderer implementation
  */
 export class SolidSSRRenderer implements FrameworkSSRRenderer {
-	private solidJs: typeof import("solid-js") | null = null;
-	private solidWeb: typeof import("solid-js/web") | null = null;
+	// eslint-disable-next-line @typescript-eslint/no-explicit-any
+	private solidJs: any = null;
+	// eslint-disable-next-line @typescript-eslint/no-explicit-any
+	private solidWeb: any = null;
 	private initialized = false;
 
 	/**
@@ -472,7 +474,7 @@ export class SolidResource<T> {
 		if (this.error) throw this.error;
 
 		try {
-			this.data = await this.promise;
+			this.data = (await this.promise) as T;
 			this.loading = false;
 			return this.data;
 		} catch (err) {

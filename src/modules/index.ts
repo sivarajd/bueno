@@ -445,8 +445,8 @@ export class Application {
 
 		for (const provider of providers) {
 			const token = provider.token;
-			const instance = this.container.resolve(token);
-			this.providerInstances.set(token, instance);
+			const instance = this.container.resolve(token as import("../container").Token);
+			this.providerInstances.set(token as import("../container").Token, instance);
 			this.lifecycleManager.registerInstance(instance);
 		}
 	}
@@ -572,9 +572,8 @@ export class Application {
 							string,
 							(p: string, h: RouteHandler) => void
 						>
-					)[routerMethod](fullPath, (context: Context) =>
-						handler.call(instance, context),
-					);
+					)[routerMethod](fullPath, ((context: Context): unknown =>
+						handler.call(instance, context)) as RouteHandler);
 				}
 			}
 		}
@@ -643,8 +642,8 @@ export class Application {
 		if (metadata.providers) {
 			for (const provider of metadata.providers) {
 				this.container.register(provider);
-				const instance = this.container.resolve(provider.token);
-				this.providerInstances.set(provider.token, instance);
+				const instance = this.container.resolve(provider.token as import("../container").Token);
+				this.providerInstances.set(provider.token as import("../container").Token, instance);
 				this.lifecycleManager.registerInstance(instance);
 			}
 
@@ -846,8 +845,8 @@ export class Application {
 						}
 	
 						// Execute middleware and handler
-						const pipeline = compose(match.middleware ?? []);
-						return pipeline(context, match.handler);
+						const pipeline = compose((match.middleware ?? []) as import("../middleware").Middleware[]);
+						return pipeline(context, match.handler as import("../middleware").Handler);
 					};
 	
 					// Execute interceptors wrapping around the handler
@@ -1008,8 +1007,8 @@ export class Application {
 				}
 	
 				// Execute middleware and handler
-				const pipeline = compose(match.middleware ?? []);
-				return pipeline(context, match.handler);
+				const pipeline = compose((match.middleware ?? []) as import("../middleware").Middleware[]);
+				return pipeline(context, match.handler as import("../middleware").Handler);
 			};
 	
 			// Execute interceptors wrapping around the handler

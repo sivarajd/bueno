@@ -190,14 +190,14 @@ class DeduplicationStore {
 	getCached(key: string, ttl: number): Response | undefined {
 		const cached = this.cache.get(key);
 		if (cached && Date.now() - cached.timestamp < ttl) {
-			return cached.response.clone();
+			return cached.response.clone() as Response;
 		}
 		return undefined;
 	}
 
 	setCached(key: string, response: Response, ttl: number): void {
 		this.cache.set(key, {
-			response: response.clone(),
+			response: response.clone() as Response,
 			timestamp: Date.now(),
 			ttl,
 		});
@@ -262,8 +262,8 @@ class OptimisticStore {
 			previousData,
 			timestamp: Date.now(),
 			status: "pending",
-			onRollback: callbacks?.onRollback,
-			onConfirm: callbacks?.onConfirm,
+			onRollback: callbacks?.onRollback as ((previousData: unknown) => void) | undefined,
+			onConfirm: callbacks?.onConfirm as ((data: unknown) => void) | undefined,
 		});
 		return id;
 	}
@@ -1239,7 +1239,7 @@ export function extractRouteTypes(router: Router): RouteTypeInfo[] {
 // ============= Response Helpers =============
 
 export async function parseJSON<T>(response: Response): Promise<T> {
-	return response.json();
+	return response.json() as Promise<T>;
 }
 
 export async function parseText(response: Response): Promise<string> {

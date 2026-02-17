@@ -441,16 +441,24 @@ export function defineIsland(
 }
 
 /**
+ * Element-like interface for DOM elements (for type checking without DOM lib)
+ */
+interface ElementLike {
+	hasAttribute(name: string): boolean;
+	getAttribute(name: string): string | null;
+}
+
+/**
  * Check if an element is an island
  */
-export function isIslandElement(element: Element): boolean {
+export function isIslandElement(element: ElementLike): boolean {
 	return element.hasAttribute(ISLAND_MARKER);
 }
 
 /**
  * Get island data from element
  */
-export function getIslandData(element: Element): IslandState | null {
+export function getIslandData(element: ElementLike): IslandState | null {
 	if (!isIslandElement(element)) {
 		return null;
 	}

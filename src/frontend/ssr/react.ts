@@ -89,8 +89,10 @@ export function style(innerHTML: string, attrs?: Record<string, string>): SSREle
  * React SSR Renderer implementation
  */
 export class ReactSSRRenderer implements FrameworkSSRRenderer {
-	private react: typeof import("react") | null = null;
-	private reactDomServer: typeof import("react-dom/server") | null = null;
+	// eslint-disable-next-line @typescript-eslint/no-explicit-any
+	private react: any = null;
+	// eslint-disable-next-line @typescript-eslint/no-explicit-any
+	private reactDomServer: any = null;
 	private initialized = false;
 
 	/**
@@ -124,7 +126,8 @@ export class ReactSSRRenderer implements FrameworkSSRRenderer {
 
 		try {
 			// Use renderToString for non-streaming
-			const html = this.reactDomServer.renderToString(component as ReactElement);
+			const renderToStringFn = (this.reactDomServer as unknown as { renderToString: (el: unknown) => string }).renderToString;
+			const html = renderToStringFn(component as ReactElement);
 			return html;
 		} catch (error) {
 			const errorMessage = error instanceof Error ? error.message : "Unknown error";

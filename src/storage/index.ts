@@ -282,14 +282,20 @@ export class Storage {
 		if (this.driver === "s3" && this.s3Storage) {
 			return this.s3Storage.upload(options);
 		}
-		return this.localStorage?.upload(options);
+		if (!this.localStorage) {
+			throw new Error("Local storage not initialized");
+		}
+		return this.localStorage.upload(options);
 	}
 
 	async download(options: DownloadOptions): Promise<Blob> {
 		if (this.driver === "s3" && this.s3Storage) {
 			return this.s3Storage.download(options);
 		}
-		return this.localStorage?.download(options);
+		if (!this.localStorage) {
+			throw new Error("Local storage not initialized");
+		}
+		return this.localStorage.download(options);
 	}
 
 	async downloadText(key: string): Promise<string> {
@@ -322,14 +328,20 @@ export class Storage {
 		if (this.driver === "s3" && this.s3Storage) {
 			return this.s3Storage.exists(key);
 		}
-		return this.localStorage?.exists(key);
+		if (!this.localStorage) {
+			throw new Error("Local storage not initialized");
+		}
+		return this.localStorage.exists(key);
 	}
 
 	async info(key: string): Promise<FileInfo | null> {
 		if (this.driver === "s3" && this.s3Storage) {
 			return this.s3Storage.info(key);
 		}
-		return this.localStorage?.info(key);
+		if (!this.localStorage) {
+			throw new Error("Local storage not initialized");
+		}
+		return this.localStorage.info(key);
 	}
 
 	async copy(sourceKey: string, destKey: string): Promise<void> {
@@ -346,7 +358,10 @@ export class Storage {
 		if (this.driver === "s3" && this.s3Storage) {
 			return this.s3Storage.list(options ?? {});
 		}
-		return this.localStorage?.list(options ?? {});
+		if (!this.localStorage) {
+			throw new Error("Local storage not initialized");
+		}
+		return this.localStorage.list(options ?? {});
 	}
 
 	getPresignedUrl(options: PresignedURLOptions): string {
@@ -360,7 +375,10 @@ export class Storage {
 		if (this.driver === "s3" && this.s3Storage) {
 			return this.s3Storage.getPublicUrl(key);
 		}
-		return this.localStorage?.getPublicUrl(key);
+		if (!this.localStorage) {
+			throw new Error("Local storage not initialized");
+		}
+		return this.localStorage.getPublicUrl(key);
 	}
 
 	async uploadFile(localPath: string, key: string): Promise<{ key: string }> {

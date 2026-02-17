@@ -361,7 +361,7 @@ export class APIRouteManager {
 					body = await request.text();
 				}
 			} catch (error) {
-				this.logger.warn("Failed to parse request body", error);
+				this.logger.warn("Failed to parse request body", error as Record<string, unknown>);
 			}
 		}
 

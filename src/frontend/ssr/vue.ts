@@ -87,8 +87,10 @@ export function addHeadElement(element: SSRElement): void {
  * Vue SSR Renderer implementation
  */
 export class VueSSRRenderer implements FrameworkSSRRenderer {
-	private vue: typeof import("vue") | null = null;
-	private vueServerRenderer: typeof import("vue/server-renderer") | null = null;
+	// eslint-disable-next-line @typescript-eslint/no-explicit-any
+	private vue: any = null;
+	// eslint-disable-next-line @typescript-eslint/no-explicit-any
+	private vueServerRenderer: any = null;
 	private initialized = false;
 
 	/**

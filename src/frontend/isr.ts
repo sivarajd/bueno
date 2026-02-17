@@ -42,7 +42,7 @@ export class ISRManager {
 	private config: ISRConfig;
 	private logger: Logger;
 	private cache: Map<string, ISRCacheEntry> = new Map();
-	private pendingRegenerations: Map<string, Promise<void>> = new Map();
+	private pendingRegenerations: Map<string, Promise<ISRRevalidationResult>> = new Map();
 	private ssrRenderer: SSRRenderer | null = null;
 	private stats = {
 		hits: 0,

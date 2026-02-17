@@ -4,7 +4,7 @@
  * Common middleware utilities for logging, CORS, request ID, etc.
  */
 
-import type { Context } from "../../context";
+import type { Context } from "../context";
 import type { Middleware } from "../index";
 
 // ============= Logger Middleware =============
