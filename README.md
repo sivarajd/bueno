@@ -2,7 +2,7 @@
 
 A Bun-Native Full-Stack Framework
 
-[![Build Status](https://img.shields.io/github/actions/workflow/status/buenojs/bueno/build.yml?branch=main)](https://github.com/buenojs/bueno/actions)
+[![Build Status](https://img.shields.io/github/actions/workflow/status/buenojs/bueno/ci.yml?branch=main)](https://github.com/buenojs/bueno/actions)
 [![Test Coverage](https://img.shields.io/codecov/c/gh/buenojs/bueno)](https://codecov.io/gh/buenojs/bueno)
 [![npm version](https://img.shields.io/npm/v/@buenojs/bueno)](https://www.npmjs.com/package/@buenojs/bueno)
 [![License](https://img.shields.io/npm/l/@buenojs/bueno)](https://github.com/buenojs/bueno/blob/main/LICENSE)
